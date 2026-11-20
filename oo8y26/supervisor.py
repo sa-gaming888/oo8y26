@@ -467,15 +467,19 @@ class Supervisor:
             self.state.map_id = session.world.map_id
 
     def relocate(self, session: Session) -> None:
-        """落點太多人不能原地遇敵：帶隊走到附近的空格。次數有上限，超過就照一般失敗處理。"""
-        from .navigation import MapGrid
+        """落點太多人不能原地遇敵：帶隊走到附近的空格。次數有上限，超過就照一般失敗處理。
+        地圖資料直接向伺服器要（只要附近那一塊），不依賴本機地圖檔：2026-11-20 容器裡沒有英雄島的地圖檔，
+        換站位連續失敗 5 次，02 隊停了五個多小時。"""
+        from . import quest
         attempt = self.crowded - 1
-        map_path = self.map_dir / f"{session.world.map_id}.dat"
         origin = (session.world.x, session.world.y)
-        candidates = relocation_candidates(MapGrid.load(map_path), origin, attempt)
+        reach = RELOCATE_RINGS[-1] + 4
+        grid = quest.fetch_server_grid(session, say=lambda message: None,
+                                       area=(origin[0] - reach, origin[1] - reach, origin[0] + reach, origin[1] + reach))
+        candidates = relocation_candidates(grid, origin, attempt)
         if not candidates:
             raise ProtocolError("附近找不到可以改站的空格")
-        session.walk_to(map_path, candidates[0], maximum_steps=60)
+        quest.walk(session, self.map_dir, candidates[0], say=lambda message: None)
         self.finish_battle(session)
         # 走路時伺服器不回推座標（world.x/y 要到戰鬥結束才更新），所以這裡記的是目標格。
         self.say(f"原位置 {origin} 太多人，改站到 {candidates[0]}（第 {self.crowded} 次）")

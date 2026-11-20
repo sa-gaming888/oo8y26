@@ -286,6 +286,60 @@ def store_items(session: Session, keep, *, say=print) -> list:
     return stored
 
 
+def withdraw_items(session: Session, names, *, say=print) -> list:
+    """把個人道具倉庫裡指定名稱的道具領到背包（已經在背包的不領）；回傳領出的名稱。
+    轉生要把四大洞窟的證明帶在身上（使用者 2026-11-20）。封包同 store_items：開啟 `O|`、查內容 `X|編號|`、領出 `B|編號|`。
+    倉庫裡找不到的不算錯（由呼叫端檢查背包齊不齊）；領出沒等到確認、或背包沒空位就停。"""
+    world = session.world
+    if world.items is None:
+        raise ProtocolError("沒有收到背包資料，已停止")
+    held = {world.items[slot][0] for slot in world.items}
+    wanted = [name for name in names if name not in held]
+    if not wanted or session.battle.active:
+        return []
+    session.sync()
+
+    def exchange(data: bytes, prefix: bytes, seconds=6.0):
+        try:
+            session._send_command(821, (2, data), time.monotonic() + session.timeout)
+        except BaseException:
+            session.close()
+            raise
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            event = session.poll_event(0.3)
+            if event is not None and event.func == 820 and event.values[0] == 2 and event.values[1].startswith(prefix):
+                return event.values[1].decode("gbk", "replace").split("|")
+        return None
+
+    listing = exchange(b"O|", b"L|")
+    if listing is None:
+        raise ProtocolError("沒有收到個人道具倉庫清單，已停止")
+    taken = []
+    for key in [listing[index + 3] for index in range(4, len(listing) - 5, 6)]:
+        if not wanted:
+            break
+        time.sleep(1.5)
+        info = exchange(f"X|{key}|".encode(), b"I|")
+        if info is None or len(info) <= 2 or info[2] not in wanted:
+            continue
+        if world.free_bag_slots() < 1:
+            raise ProtocolError(f"背包沒有空位領出「{info[2]}」，已停止")
+        time.sleep(1.5)
+        if exchange(f"B|{key}|".encode(), b"D|") is None:
+            raise ProtocolError(f"領出「{info[2]}」沒有收到確認，已停止")
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end and not world.has_item(info[2]):
+            session.poll_event(0.3)
+        if not world.has_item(info[2]):
+            raise ProtocolError(f"領出「{info[2]}」後背包裡沒有看到，已停止")
+        wanted.remove(info[2])
+        taken.append(info[2])
+    if taken:
+        say("從個人道具倉庫領出：" + "、".join(taken))
+    return taken
+
+
 def store_items_shared(session: Session, keep, *, say=print) -> list:
     """（舊做法）把背包裡用不到的道具存進共享倉庫（C202 35／視窗 1125，回 `I|背包格` 存入、`C|` 關閉）。
 

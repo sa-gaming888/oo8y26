@@ -112,7 +112,8 @@ def parse_script(text: str) -> list:
     return commands
 
 
-def plan_route(commands: list, *, has_item=lambda name: True, has_pet=lambda name, level=0: True, night=None) -> list:
+def plan_route(commands: list, *, has_item=lambda name: True, has_pet=lambda name, level=0: True, night=None,
+               rebirth=None) -> list:
     """把腳本展開成動作清單：("teleport", 代號)、("map", 地圖)、("walk", x, y)、("talk", 方向)、("note", 文字)。"""
     actions = []
     line = 0
@@ -160,6 +161,15 @@ def plan_route(commands: list, *, has_item=lambda name: True, has_pet=lambda nam
                     line = int(arguments[-1]) - 1
                     if len(arguments) < 2 or not 0 <= line < len(commands):
                         raise ValueError
+            elif name == "转生":
+                # `转生 轉生數 行號`：角色的轉生數不是這個數就跳到那一行（轉生任務的腳本每一轉一段，
+                # 抓的守護獸不同）。2026-11-20 讀任務 100 的腳本得出；不知道轉生數就停，不亂走。
+                if rebirth is None:
+                    raise ProtocolError("讀不到角色的轉生數，已停止")
+                if rebirth != int(arguments[0]):
+                    line = int(arguments[1]) - 1
+                    if not 0 <= line < len(commands):
+                        raise ValueError
             elif name in ("DAY", "NIGHT"):
                 # `DAY 行號`：現在不是白天就跳到那一行；`NIGHT 行號`：現在不是夜晚就跳（夢幻洞窟白天和夜晚入口不同）。
                 if night is None:
@@ -173,6 +183,14 @@ def plan_route(commands: list, *, has_item=lambda name: True, has_pet=lambda nam
         except (ValueError, IndexError):
             raise ProtocolError(f"腳本第 {line} 行格式不符，已停止") from None
     raise ProtocolError("腳本指令數超過上限，已停止")
+
+
+def rebirth_of(world):
+    """角色的轉生數（狀態訊息 P1 第 24 欄）；讀不到回 None。"""
+    try:
+        return int((world.raw.get("P1") or [])[24])
+    except (IndexError, ValueError, AttributeError):
+        return None
 
 
 def load_choices(path: Path = CHOICES_FILE) -> dict:
@@ -642,7 +660,15 @@ def walk(session: Session, map_dir: Path, goal: tuple, *, say=print, fight=fight
         if (raw.width, raw.height) != (world.width, world.height):
             raise OSError
     except OSError:
-        raw = fetch_server_grid(session, say=say)       # 沒有地圖檔（或尺寸不符）：改用伺服器的地圖資料
+        # 沒有地圖檔（或尺寸不符）：改用伺服器的地圖資料。大地圖不要整張（村外那張要一千多塊），
+        # 只要「目前位置到目的地」外擴一圈的那一塊——容器裡沒有地圖檔，短距離移動（換站位）靠這個。
+        if world.width * world.height > WHOLE_MAP_CELLS and world.x is not None and world.y is not None:
+            left, right = sorted((world.x, goal[0]))
+            top, bottom = sorted((world.y, goal[1]))
+            raw = fetch_server_grid(session, say=say, area=(left - AREA_MARGIN, top - AREA_MARGIN,
+                                                            right + AREA_MARGIN, bottom + AREA_MARGIN))
+        else:
+            raw = fetch_server_grid(session, say=say)
         from_server = True
     grid, route, battles = LearnedGrid(raw, allow_loose=from_server), None, 0
     grid.known = known_walls(origin)
@@ -1241,6 +1267,10 @@ def heal_with_items(session: Session, *, say=print) -> None:
         say(f"用了 {used} 個{HEAL_ITEM}補血：{before}% → {solo_hp_percent(world)}%")
 
 
+WHOLE_MAP_CELLS = 40000      # 沒有地圖檔時，格子數超過這個就不向伺服器要整張圖，只要路線附近那一塊
+AREA_MARGIN = 30             # 只要一塊時，起點與終點往外多要幾格
+CARRY_ITEMS = ()             # 這個任務要帶在身上的道具名稱（不收進倉庫；缺了從倉庫領，領不齊就停）
+STOP_AFTER_CAPTURE = False   # 抓到腳本要的寵物後先停下來，不接著做下一段（轉生前要先讓人確認）
 STORE_SPARE_PETS = True      # --keep-pets 時關掉：共享寵物倉庫滿了（10 格），隊員的多餘寵物只能留在身上
 
 
@@ -1254,12 +1284,19 @@ def run_step(session: Session, map_dir: Path, task: int, step: int, *, say=print
         # 使用者規定：解任務時身上只留騎寵與戰寵，其餘存共享寵物倉庫（任務獎勵常要空的寵物欄）。
         from .storage import store_spare_pets
         store_spare_pets(session, say=say, keep=keep_pets)
+    if CARRY_ITEMS and not session.battle.active and world.items is not None:
+        # 這個任務要帶在身上的道具（轉生要帶四大洞窟的證明）：缺了先從個人道具倉庫領，還是不齊就停，不帶著缺的去做。
+        from .storage import withdraw_items
+        withdraw_items(session, CARRY_ITEMS, say=say)
+        missing = [name for name in CARRY_ITEMS if not world.has_item(name)]
+        if missing:
+            raise ProtocolError("要帶在身上的道具不齊：" + "、".join(missing) + "，已停止")
     if not session.battle.active:
         discard_listed(session, keep=unfinished_items(session, task, script_dir), say=say)
     if not session.battle.active and world.items is not None and world.free_bag_slots() < 4:
         # 背包快滿了：把這個任務用不到的道具（之前任務的獎勵）存共享倉庫，只留這個任務腳本提到的道具。
         from .storage import store_items
-        store_items(session, task_items(task, script_dir), say=say)
+        store_items(session, task_items(task, script_dir) | set(CARRY_ITEMS), say=say)
     if not session.battle.active and world.items is not None and world.free_bag_slots() < 6:
         # 途中打怪掉的肉會把背包塞滿，NPC 要給任務道具時就收不下（2026-11-19 五兄弟的答案用紙）；每一步開始前清一次。
         # 紅暴任務交勾玉時空 3 格還是被說「道具已經滿了」，所以盡量清到 6 格（只丟肉，沒有肉可丟就算了）。
@@ -1274,7 +1311,7 @@ def run_step(session: Session, map_dir: Path, task: int, step: int, *, say=print
         raise ProtocolError(f"找不到任務腳本 {path.name}，已停止")
     commands = parse_script(path.read_text(encoding="utf-8"))
     actions = plan_route(commands, has_item=session.world.has_item, has_pet=session.world.has_pet,
-                        night=session.world.night())
+                        night=session.world.night(), rebirth=rebirth_of(session.world))
     actions = apply_choice(actions, load_choices().get(f"{task}-{step}"))
     team_fight = fight
     if not session.battle.active:
@@ -1293,7 +1330,7 @@ def run_step(session: Session, map_dir: Path, task: int, step: int, *, say=print
             needed = listed
             lacking = sum(1 for name in set(needed) if not world.has_item(name))
             if world.free_bag_slots() < lacking:
-                store_items(session, task_items(task, script_dir), say=say)      # 空位不夠就先把別的任務的道具存倉庫
+                store_items(session, task_items(task, script_dir) | set(CARRY_ITEMS), say=say)      # 空位不夠就先把別的任務的道具存倉庫
             if world.free_bag_slots() < lacking:
                 make_room(session, lacking, say=say)                             # 還不夠就丟肉
             buy_with_stone(session, needed, say=say)
@@ -1633,6 +1670,9 @@ def run_step(session: Session, map_dir: Path, task: int, step: int, *, say=print
         return run_step(session, map_dir, task, step, say=say, script_dir=script_dir, fight=team_fight)
     if catching is not None:
         capture(session, catching, say=say)
+        if STOP_AFTER_CAPTURE:
+            say(f"抓到「{catching}」，照設定先停在這裡，不接著做下一段")
+            return progress_of(session)
         if rounds + 1 >= MAX_STEP_ROUNDS:
             raise ProtocolError(f"任務 {task} 第 {step} 步換分支次數超過上限，已停止")
         return run_step(session, map_dir, task, step, say=say, script_dir=script_dir, fight=team_fight,
@@ -1645,7 +1685,7 @@ def run_step(session: Session, map_dir: Path, task: int, step: int, *, say=print
         # 同一步裡要依序拿好幾樣道具的任務（強盜洞窟：打三個首領各拿一件神器）：進度不會前進，
         # 但背包變了，腳本的 `I` 會跳到下一條分支。路線真的變了才接著做，而且有次數上限。
         again = apply_choice(plan_route(commands, has_item=session.world.has_item, has_pet=session.world.has_pet,
-                        night=session.world.night()),
+                        night=session.world.night(), rebirth=rebirth_of(session.world)),
                              load_choices().get(f"{task}-{step}"))
         if again == actions and fought_boss and rounds + 1 < 2:
             # 這一步的對話引發了首領戰：打贏之後要再對同一個位置說一次話，NPC 才給東西
@@ -2170,7 +2210,7 @@ def run_caravan(config: dict, map_dir: Path, task: int, team: tuple, controller:
             path = script_dir_for(task, step)
             first_actions = plan_route(parse_script(path.read_text(encoding="utf-8")),
                                        has_item=session.world.has_item, has_pet=session.world.has_pet,
-                                       night=session.world.night())
+                                       night=session.world.night(), rebirth=rebirth_of(session.world))
             route_maps = [action[1] for action in first_actions if action[0] == "map"]
             starts_with_teleport = bool(first_actions) and first_actions[0][0] == "teleport"
             roster = session.world.roles.roles
