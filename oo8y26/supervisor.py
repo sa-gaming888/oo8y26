@@ -287,7 +287,12 @@ class Supervisor:
         from .training import raise_loyalty
         if getattr(session, "_pets_verified", True) is not True:
             return      # 連上時還在戰鬥中、沒有真的檢查寵物：維持原本的判斷（2026-11-20 這種時候誤判成「都騎上了」）
-        waiting = sorted(getattr(session, "_ride_refused", {})) if raise_loyalty() else []
+        waiting = (sorted(set(getattr(session, "_ride_refused", {})) - set(getattr(session, "_unmounted", ())))
+                   if raise_loyalty() else [])
+        riderless = sorted(getattr(session, "_unmounted", ()))
+        if riderless and riderless != getattr(self, "riderless", None):
+            self.say(f"暫時沒有騎得上的寵物、先不騎的角色：{riderless}（騎寵等級最多只能比人物高 5 級；之後會定時再試）")
+        self.riderless = riderless
         if waiting != self.raising:
             self.say(f"騎寵忠誠不足、先在村口讓牠出戰練起來的角色：{waiting}" if waiting
                      else "全隊的優先騎寵都騎上了，回正常的練功路線")

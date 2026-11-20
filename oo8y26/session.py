@@ -438,6 +438,7 @@ class Session:
         try:
             if not hasattr(self, "_ride_refused"):
                 self._ride_refused = {}
+            self._unmounted = set()
             default_mounts, default_fighters = allowed_pets()
             mount_names = (mount,) if mount is not None else default_mounts
             fighter_names = (battle_pet,) if battle_pet is not None else default_fighters
@@ -507,6 +508,7 @@ class Session:
                             raise ProtocolError(f"角色 {slot} 騎乘被拒絕（忠誠不足），已停止")
                         # 備用的也騎不上：先不騎，只放原本想要的戰寵（2026-11-21 轉生後 1 級，沒有一隻騎得上）
                         mount_index, fighter_index = None, wanted_fighter
+                        self._unmounted.add(slot)        # 這不是練忠誠能解決的（是等級規定）：不必留在村口
                 if actor.battle_pet_index != fighter_index:
                     self._set_pet_work(slot, fighter_index, 1)
                     self._set_battle_pet(slot, fighter_index)
