@@ -22,6 +22,8 @@
   OPENING             0＝不做新角色開局整備（穿新手裝備、開禮包、選蛋與騎乘證）；預設會做，做過的自動略過
   DISCARD_PETS        開局要丟掉的寵物名稱（遊戲內原文，逗號分隔；預設「凯比」＝出生寵）；none＝不丟。
                       騎寵、戰寵與 10 級以上的不丟；丟寵不可逆
+  EXTRA_MOUNTS        另外指定、最先試的騎寵名稱（遊戲內原文，逗號分隔，例「贝鲁卡」）。不在身上會從寵物倉庫領；
+                      騎不上就接著試計畫檔裡的騎寵（雷龍），都不行就先不騎
   GATE_UNTIL          全隊未滿幾級先在村口練（預設 10；轉生過的隊伍自動當成 0＝直接飛第一張練功圖）。有設就照設的
   FAST_BATTLE         0＝分級練功不開快速戰鬥；預設開（只要是會遇敵的地方都開快戰）
   STATUS_SECONDS      每隔幾秒把人物與隊伍狀態印到日誌（預設 60）；0＝不印
@@ -257,6 +259,17 @@ def settle_pets(config: dict, slot: int, discard: tuple, say) -> None:
         while time.monotonic() < end:
             session.poll_event(0.25)
         own = session.world.roles.controlled_slot
+        from . import storage, training
+        for name in training.EXTRA_MOUNTS:      # 另外指定的騎寵不在身上：從個人或共享寵物倉庫領一隻（都沒有就算了）
+            if len(session.world.pets) >= 5 or any(session.world.has_pet(other) for other in training.EXTRA_MOUNTS):
+                break
+            try:
+                storage.withdraw_pet(session, name, say=lambda message: say(f"開局整備 {slot} 號：{message}"))
+                time.sleep(1.0)
+            except ProtocolError as error:
+                if session.sock is None:
+                    raise
+                say(f"開局整備 {slot} 號：領不到「{name}」（{error}）")
         session.ensure_pets(slots=(own,))
         actor = session.world.actor(own)
         names = {index: pet.name.decode("gbk", "replace") for index, pet in actor.pets.items()}
@@ -409,6 +422,8 @@ def _run(environ: Mapping[str, str], say, opened) -> int:
     """跑一次練功；回傳結束碼。任何錯誤都只記一行原因，不重試。"""
     try:
         say(f"啟動：{describe(environ)}")
+        from . import training
+        training.EXTRA_MOUNTS = tuple(part.strip() for part in environ.get("EXTRA_MOUNTS", "").split(",") if part.strip())
         line, profile = load_profile(environ)
         map_dir = map_dir_of(environ)
         token = api_token(environ)

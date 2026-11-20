@@ -488,8 +488,18 @@ class Session:
                 # 避免把已出戰寵物再次設為待機而被伺服器拒絕。
                 if actor.battle_pet_index is None:
                     self._set_battle_pet(slot, -1)
-                if actor.mount_pet_index != mount_index and not self._ride(
-                        slot, mount_index, give_up_after=RIDE_TRY_SECONDS if is_preferred else None):
+                riding = actor.mount_pet_index == mount_index or self._ride(
+                    slot, mount_index, give_up_after=RIDE_TRY_SECONDS if is_preferred else None)
+                if not riding and is_preferred:
+                    # 第一順位騎不上：優先名單上身上還有的其他寵物依序試（例如老虎騎不上再試雷龍）
+                    for name in preferred[0]:
+                        found = [pet.index for pet in actor.pets.values() if pet_name(pet.name) == name]
+                        if len(found) != 1 or found[0] in (mount_index, fighter_index) or actor.pets[found[0]].hp <= 0:
+                            continue
+                        if self._ride(slot, found[0], give_up_after=RIDE_TRY_SECONDS):
+                            mount_index, riding = found[0], True
+                            break
+                if not riding:
                     if not is_preferred:
                         raise ProtocolError(f"角色 {slot} 騎乘被拒絕（忠誠不足），已停止")
                     # 優先的騎寵還不能騎（忠誠不到 100，或等級比人物高超過 5 級）：這次先用備用組合，過一陣子再試

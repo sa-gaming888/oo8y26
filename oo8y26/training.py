@@ -90,7 +90,8 @@ def allowed_pets() -> tuple:
     wanted = config.get("preferred") or {}
 
     def names(key, extra=()):
-        listed = [config[key]] + list(config.get(key + "_alternatives", [])) + list(wanted.get(key, [])) + list(extra)
+        listed = ([config[key]] + list(config.get(key + "_alternatives", [])) + list(wanted.get(key, [])) + list(extra)
+                  + (list(EXTRA_MOUNTS) if key == "mount" else []))
         return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in listed))
     # 練忠誠期間優先騎寵會先當戰寵，所以戰寵名單也要認得牠
     return names("mount"), names("battle_pet", wanted.get("mount", []) if config.get("raise_loyalty") else ())
@@ -103,9 +104,12 @@ def preferred_pets():
     if not wanted:
         return None
 
-    def names(key):
-        return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in wanted[key]))
-    return names("mount"), names("battle_pet")
+    def names(key, first=()):
+        return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in list(first) + list(wanted[key])))
+    return names("mount", EXTRA_MOUNTS), names("battle_pet")
+
+
+EXTRA_MOUNTS = ()      # 容器用環境變數另外指定、排在最前面試的騎寵名稱（例如老虎）；騎不上會接著試計畫檔裡的
 
 
 def mount_optional() -> bool:
