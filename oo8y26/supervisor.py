@@ -654,11 +654,14 @@ class Supervisor:
                         self.travel(session, detail)
                     elif action == "train":
                         reason = self.train(session, detail)
+                        # 這一輪打完就取消原地遇敵（使用者 2026-11-20：配點前要先取消）：接下來可能要離線整備
+                        session._send_command(202, (18,), time.monotonic() + session.timeout)
                         self.say(f"本輪結束（{reason}）：累計 {self.battles} 場，全隊最低等級 {self.state.minimum_level}，"
                                  f"最低血量 {self.state.hp_percent}%")
                     if action != "maintain":
                         self.state.failures = 0
                         continue
+                    session._send_command(202, (18,), time.monotonic() + session.timeout)      # 要去配點了：先取消原地遇敵
             except (ProtocolError, OSError) as error:
                 text = str(error)
                 if "驗證" in text:

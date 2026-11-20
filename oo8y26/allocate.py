@@ -74,6 +74,9 @@ def allocate(config: dict, slot: int, ratio: tuple) -> dict:
         if not pump(3.0, lambda: remaining["value"] is not None):
             raise ProtocolError("沒有收到剩餘點數，已停止")
         points = remaining["value"]
+        # 配點前先取消原地遇敵（使用者 2026-11-20）：免得配到一半被拉進戰鬥。沒在遇敵時送這個也沒有副作用。
+        session._send_command(202, (18,), time.monotonic() + session.timeout)
+        pump(0.6, lambda: False)
         if session.battle.active:
             raise ProtocolError("角色在戰鬥中，不配點")
         given = [0, 0, 0, 0]
