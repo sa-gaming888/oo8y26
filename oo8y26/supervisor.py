@@ -50,9 +50,7 @@ MAX_CONSECUTIVE_HEALS = 3
 TROUBLE_WINDOW = 900.0         # 秒：這段時間內同一張圖出事（補血、全滅）幾次算打不過
 TROUBLE_LIMIT = 2
 RETREAT_SECONDS = 1800.0       # 退圖後多久才再嘗試前進
-MAINTAIN_EVERY_LEVELS = 1      # 每升幾級整備（配點）一次；使用者 2026-11-20：有升級就配（原本 5）
-MAINTAIN_MIN_SECONDS = 300.0   # 因為升級而配點，兩次之間至少隔多久
-MAINTAIN_FORCE_LEVELS = 5      # 累積升了這麼多級就不管間隔，直接配
+MAINTAIN_EVERY_LEVELS = 5      # 每升幾級整備（配點）一次
 BAG_EVERY_LEVELS = 5           # 每幾級順便清一次隊員背包（要多登入一次，不必每級做）
 BATTLES_PER_ROUND = 40
 ROUND_SECONDS = 900
@@ -94,12 +92,9 @@ def allowed_zone(level: int) -> int:
 
 
 def maintain_due(state: State, now: float) -> bool:
-    """該不該回去配點：有升級就配，但兩次之間至少隔 MAINTAIN_MIN_SECONDS（低等時幾場就升一級，
-    每級都停下來讓五隻各自登入配點會大半時間沒在打怪）；累積升了 MAINTAIN_FORCE_LEVELS 級就不等了。"""
-    gained = state.minimum_level - (state.last_maintained_level or 0)
-    if gained >= MAINTAIN_FORCE_LEVELS:
-        return True
-    return gained >= MAINTAIN_EVERY_LEVELS and now - state.last_maintained_at >= MAINTAIN_MIN_SECONDS
+    """該不該回去配點：全隊最低等級比上次配點時多了 MAINTAIN_EVERY_LEVELS 級（使用者 2026-11-20：統一 5 級配一次；
+    每次重新登入啟動時另外會先檢查、配一次，見 Supervisor.run 開頭）。"""
+    return state.minimum_level - (state.last_maintained_level or 0) >= MAINTAIN_EVERY_LEVELS
 
 
 def decide(state: State, *, target_level: int, now: float) -> tuple:
