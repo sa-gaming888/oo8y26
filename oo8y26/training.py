@@ -62,8 +62,8 @@ class TrainingPlan:
                 if len(matches) != 1:
                     raise ProtocolError("可用戰寵無法唯一確認，禁止遇敵")
                 battle_index = matches[0]
-            for index, expected in zip((actor.mount_pet_index, battle_index), allowed_pets()):
-                if expected is allowed_pets()[0] and index in (None, -1) and mount_optional():
+            for is_mount, index, expected in zip((True, False), (actor.mount_pet_index, battle_index), allowed_pets()):
+                if is_mount and index in (None, -1) and mount_optional():
                     continue          # 暫時沒有騎得上的寵物：不檢查騎寵
                 if index not in actor.pets:
                     raise ProtocolError("尚未確認全隊騎寵或戰寵狀態，禁止開始戰鬥")
