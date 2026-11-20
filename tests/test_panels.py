@@ -115,3 +115,20 @@ def test_api_routes(world, tmp_path, monkeypatch):
     assert api.answer("POST", "/api/refresh?sub=9", snapshot=path)[0] == 400
     monkeypatch.setattr(panels, "running_activity", lambda: "練功")
     assert api.answer("POST", "/api/refresh", snapshot=path)[0] == 409
+
+
+def test_quests_panel_without_catalog_file(world, tmp_path, monkeypatch):
+    """公開版容器不帶任務清單檔：任務面板只給進度，存快照不能因此停掉（2026-11-20 容器實際發生）。"""
+    from oo8y26 import quest
+    world.tasks = ("|".join(["1"] + ["0"] * 31).encode("ascii"), b"4-2")
+    if quest.TASKS_FILE.is_file():
+        assert any(row.get("名稱") for row in panels.quests_panel(world))        # 有清單檔：有名稱
+
+    def missing(path=None):
+        raise FileNotFoundError(2, "No such file or directory")
+    monkeypatch.setattr(quest, "load_tasks", missing)
+    assert panels.quests_panel(world) == [{"編號": 0, "狀態": "已完成", "做完步數": None},
+                                          {"編號": 4, "狀態": "進行中", "做完步數": 2}]
+    panels.record(1, world, tmp_path / "panels.json")
+    assert panels.load(tmp_path / "panels.json")["角色"]["1"]["任務"][1]["編號"] == 4
+    assert api.answer("GET", "/api/summary", snapshot=tmp_path / "panels.json")[0] == 200

@@ -195,11 +195,34 @@ def describe(env: Mapping[str, str]) -> str:
     return "、".join(states + plain)
 
 
+def data_writable() -> None:
+    """面板快照的目錄要能寫（Kubernetes 掛載的磁碟區權限不對時，在登入前就擋下）。"""
+    folder = panels.SNAPSHOT_FILE.parent
+    probe = folder / ".write-test"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as error:
+        raise ValueError(f"資料目錄 {folder} 不能寫：{error.strerror}（容器以使用者 65532 執行）") from None
+
+
+def snapshot_works() -> None:
+    """用一筆假資料走一次「整理面板」：映像裡缺資料檔的話，在這裡就會發現，而不是登入後才停。"""
+    from .world import WorldState
+    world = WorldState()
+    world.tasks = ("|".join(["1"] + ["0"] * 31).encode("ascii"), b"4-2")      # 任務 0 完成、任務 4 做到第 2 步
+    rows = panels.snapshot_of(world).get("任務")
+    if not rows:
+        raise ValueError("面板整理不出任務進度")
+
+
 def check(env: Mapping[str, str]) -> list:
-    """不登入的自我檢查：設定檔、模組、地圖、協定表。回傳問題清單（空的＝通過）。"""
+    """不登入的自我檢查：設定檔、模組、地圖、協定表、面板整理、資料目錄。回傳問題清單（空的＝通過）。"""
     problems = []
     for step in (lambda: load_profile(env), lambda: map_dir_of(env), lambda: api_token(env),
-                 lambda: _number(env, "BATTLES"), lambda: _number(env, "API_PORT"), schemas):
+                 lambda: _number(env, "BATTLES"), lambda: _number(env, "API_PORT"), schemas,
+                 snapshot_works, data_writable):
         try:
             step()
         except (ProtocolError, OSError, ValueError, KeyError) as error:
@@ -235,6 +258,8 @@ def main(argv=None, environ: Mapping[str, str] = os.environ) -> int:
         token = api_token(environ)
         battles = _number(environ, "BATTLES", 6000)
         port = _number(environ, "API_PORT", API_PORT)
+        snapshot_works()
+        data_writable()
         config = build_config(environ, line)
         panels.clear_activity()
         if token:
@@ -249,6 +274,9 @@ def main(argv=None, environ: Mapping[str, str] = os.environ) -> int:
         return 0
     except (ProtocolError, OSError, ValueError, KeyError) as error:
         say(f"停止：{error}")
+        return 1
+    except Exception as error:      # 沒料到的錯誤也要留一行原因再結束，不重試
+        say(f"停止：程式錯誤 {type(error).__name__}：{error}")
         return 1
     finally:
         if server is not None:

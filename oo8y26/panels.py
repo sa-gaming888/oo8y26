@@ -109,7 +109,15 @@ def quests_panel(world) -> list | None:
     from . import quest
     progress = quest.parse_progress(*world.tasks)
     rows = []
-    for task in quest.load_tasks().values():
+    try:
+        catalog = quest.load_tasks().values()
+    except (OSError, ValueError, KeyError):
+        # 沒有任務清單檔（公開版容器不帶）：只給伺服器回報的進度，沒有名稱與總步數。
+        # 2026-11-20 容器因為缺這個檔在第一次存快照時停掉，所以這裡不能讓整個練功跟著停。
+        numbers = sorted(set(progress.done) | set(progress.steps))
+        return [{"編號": number, "狀態": "已完成" if number in progress.done else "進行中",
+                 "做完步數": None if number in progress.done else progress.steps[number]} for number in numbers]
+    for task in catalog:
         number, total = task["id"], len(task["steps"])
         if number in progress.done:
             state, done = "已完成", total
