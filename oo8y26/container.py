@@ -23,6 +23,7 @@
   DISCARD_PETS        開局要丟掉的寵物名稱（遊戲內原文，逗號分隔；預設「凯比」＝出生寵）；none＝不丟。
                       騎寵、戰寵與 10 級以上的不丟；丟寵不可逆
   FAST_BATTLE         0＝分級練功不開快速戰鬥；預設開（只要是會遇敵的地方都開快戰）
+  STATUS_SECONDS      每隔幾秒把人物與隊伍狀態印到日誌（預設 60）；0＝不印
   ROUTE_UNTIL         分級路線練到幾級才換成活動設定檔的練功點（預設 123）；1＝不走分級路線
   ROUTE_HOURS         分級練功的時間上限（小時，預設 240）
   HOLD_ON_STOP        1＝停下來之後（出錯、到目標等級）容器留著不結束，也不重新登入；Kubernetes 上一定要設，
@@ -62,6 +63,7 @@ GROUP_ID = "1"
 ROUTE_UNTIL = 123        # 分級路線練到幾級才換活動設定檔的練功點（2026-11-20 舊隊伍在 123 級換到英雄島 254）
 ROUTE_HOURS = 240        # 分級練功的總時間上限（小時）
 OPENING_GAP = 2.0
+STATUS_SECONDS = 60      # 每隔幾秒把人物與隊伍狀態印到日誌
 DISCARD_MAX_LEVEL = 10   # 開局只丟這個等級以下的寵物
 
 
@@ -255,6 +257,7 @@ def grow(env: Mapping[str, str], config: dict, map_dir: Path, target: int, say, 
         supervisor = Supervisor(config, map_dir=map_dir, target_level=until, maximum_seconds=hours * 3600.0,
                                 log=lambda message: print(message, flush=True))
         supervisor.fast = env.get("FAST_BATTLE", "1") != "0"
+        supervisor.status_seconds = float(_number(env, "STATUS_SECONDS", STATUS_SECONDS))
     say(f"分級練功：全隊練到 {until} 級（時間上限 {hours} 小時）")
     with panels.activity("分級練功"):
         code = supervisor.run()
@@ -308,7 +311,8 @@ def check(env: Mapping[str, str]) -> list:
     problems = []
     for step in (lambda: load_profile(env), lambda: map_dir_of(env), lambda: api_token(env),
                  lambda: _number(env, "BATTLES"), lambda: _number(env, "API_PORT"),
-                 lambda: _number(env, "ROUTE_UNTIL"), lambda: _number(env, "ROUTE_HOURS"), plan_readable, schemas,
+                 lambda: _number(env, "ROUTE_UNTIL"), lambda: _number(env, "ROUTE_HOURS"),
+                 lambda: _number(env, "STATUS_SECONDS"), plan_readable, schemas,
                  snapshot_works, data_writable):
         try:
             step()
@@ -378,6 +382,7 @@ def _run(environ: Mapping[str, str], say, opened) -> int:
         code = grow(environ, config, map_dir, int(profile.get("目標等級", 140)), say)
         if code is not None:
             return code
+        modules.STATUS_SECONDS = float(_number(environ, "STATUS_SECONDS", STATUS_SECONDS))
         code = modules.run_training(config, map_dir, profile, battles=battles, say=say)
         say("練功結束（到目標等級或打滿場數）" if code == 0 else f"練功結束，結束碼 {code}")
         return code

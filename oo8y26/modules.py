@@ -26,6 +26,7 @@ from . import panels, quest
 from .session import ProtocolError, Session
 
 PROFILE_FILE = Path(__file__).resolve().parent.parent / "data" / "module_profiles.json"
+STATUS_SECONDS = 0.0      # 每隔幾秒印一次隊伍狀態；0＝不印（容器會設成 60）
 MAX_MEALS = 10             # 一次吃肉補血最多吃幾個
 MAX_ROUNDS = 400           # 一次執行最多幾輪（上限保護）
 
@@ -482,6 +483,14 @@ def train_round(context, modules, remaining: int, connect=connect) -> bool:
                 if context.end_round:
                     break
             context.fought += 1
+            if STATUS_SECONDS and time.monotonic() - getattr(context, "last_status", float("-inf")) >= STATUS_SECONDS:
+                context.last_status = time.monotonic()      # 定時印人物與隊伍狀態（只讀現有資料，不多送封包）
+                try:
+                    from .supervisor import team_report
+                    for line in team_report(world):
+                        say(line)
+                except (ProtocolError, AttributeError, KeyError) as error:
+                    say(f"隊伍狀態讀不完整：{error}")
             if context.fought % int(settings.get("回報間隔", 20)) == 0:
                 session.request_roles()
                 panels.record_team(world)

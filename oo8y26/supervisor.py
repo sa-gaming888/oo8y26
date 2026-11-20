@@ -176,6 +176,20 @@ def team_snapshot(world) -> list:
     return team
 
 
+def team_report(world) -> list:
+    """給日誌用的隊伍狀態：第一行是地圖，之後每隻角色一行（名稱、等級、生命、騎寵與戰寵的等級與生命）。"""
+    def pet(found):
+        return "無" if found is None else f"{found['name']} Lv{found['level']} {found['hp']}/{found['max_hp']}"
+
+    lines = [f"隊伍狀態：地圖 {world.map_id} 座標 ({world.x},{world.y})"]
+    for row in team_snapshot(world):
+        role = world.roles.roles.get(row["slot"])
+        name = role.name.decode("gbk", "replace") if role is not None and isinstance(role.name, bytes) else "?"
+        lines.append(f"  {row['slot']} 號 {name}：Lv{row['level']} 生命 {row['hp']}/{row['max_hp']}"
+                     f"｜騎 {pet(row['mount'])}｜戰 {pet(row['fighter'])}")
+    return lines
+
+
 CROWDED_TEXT = "已经有超过"       # 「您的当前坐标已经有超过3名玩家，无法建立新的原地遇敌」
 RELOCATE_RINGS = (6, 9, 12, 15, 18)
 
@@ -219,6 +233,8 @@ class Supervisor:
         self.crowded_total = 0
         self.reset_done = False      # 這一次組隊失敗期間是否已讓子號清過狀態
         self.premaintained = False   # 啟動時是否已先整備過
+        self.status_seconds = 60.0   # 每隔幾秒印一次隊伍狀態；0＝不印
+        self.last_report = float("-inf")
         self.fast = True             # 練功的每一場都用快速戰鬥；False＝原本逐回合確認的流程
 
     # ---- 小工具
@@ -487,6 +503,17 @@ class Supervisor:
         modules.fast_fight(session)
         modules.eat_meat(session, EAT_MEAT_BELOW, say=self.say)
 
+    def report_team(self, session: Session) -> None:
+        """每隔 status_seconds 把人物與隊伍狀態印到日誌（使用者 2026-11-20）；0＝不印。只讀現有資料，不多送封包。"""
+        if not self.status_seconds or self.clock() - self.last_report < self.status_seconds:
+            return
+        self.last_report = self.clock()
+        try:
+            for line in team_report(session.world):
+                self.say(line)
+        except (ProtocolError, AttributeError, KeyError) as error:      # 資料不完整時不讓練功跟著停
+            self.say(f"隊伍狀態讀不完整：{error}")
+
     def train(self, session: Session, index: int) -> str:
         """在目前地圖連續打，回傳停下來的原因。每場前由總控檢查血量與等級。"""
         if self.crowded:
@@ -515,6 +542,7 @@ class Supervisor:
             if session.world.map_id != self.state.zone_maps.get(index):
                 raise ProtocolError("戰鬥後不在練功地圖（可能全滅被送回記錄點）")
             self.refresh(session)
+            self.report_team(session)
             self.state.consecutive_heals = 0
             if self.battles % 5 == 0:
                 self.say(f"累計 {self.battles} 場：全隊最低等級 {self.state.minimum_level}，最低血量 {self.state.hp_percent}%")
