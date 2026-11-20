@@ -42,6 +42,7 @@ GATE_MAP = 100                 # 薩村外：戰後全隊補滿
 GATE_POSITIONS = [[637, 493], [637, 494]]
 MEAT_MIN_FREE, MEAT_FREE_TO = 3, 6   # 背包空格少於幾格就丟肉、清到幾格（同「自動丟肉」模組的預設）
 EAT_MEAT_BELOW = 80             # 一號或牠的寵物血量低於這個百分比就吃肉（同「自動吃肉」模組的預設）
+LOYALTY_RETRY_BATTLES = 20     # 練忠誠時每幾場重試一次優先騎寵
 GATE_UNTIL = 10                # 全隊未滿這個等級先在村口練
 GATE_ENEMY_LEVEL = 15          # 村口補血那一場：怪超過這個等級就不打
 RECORD_MAP = 1006              # 記錄點（村長家）
@@ -228,6 +229,7 @@ class Supervisor:
         self.crowded_total = 0
         self.reset_done = False      # 這一次組隊失敗期間是否已讓子號清過狀態
         self.premaintained = False   # 啟動時是否已先整備過
+        self.raising = []            # 優先騎寵忠誠不足、還在村口練的角色
         self.before_battle = None    # 每場開打前呼叫（容器用它在兩場之間處理停止訊號）
         self.status_seconds = 60.0   # 每隔幾秒印一次隊伍狀態；0＝不印
         self.last_report = float("-inf")
@@ -275,7 +277,19 @@ class Supervisor:
             raise ProtocolError("隊員寵物資料未推送")
         self.use_plan(session.world.map_id or 0)       # ensure_pets 會讀計畫裡鎖定的寵物名稱
         session.ensure_pets()
+        self.note_loyalty(session)
         self.refresh(session)
+
+    def note_loyalty(self, session: Session) -> None:
+        """有角色的優先騎寵還不能騎（忠誠不足）＝要先留在村口練忠誠；狀態有變就記一行。"""
+        from .training import raise_loyalty
+        if getattr(session, "_pets_verified", True) is not True:
+            return      # 連上時還在戰鬥中、沒有真的檢查寵物：維持原本的判斷（2026-11-20 這種時候誤判成「都騎上了」）
+        waiting = sorted(getattr(session, "_ride_refused", {})) if raise_loyalty() else []
+        if waiting != self.raising:
+            self.say(f"騎寵忠誠不足、先在村口讓牠出戰練起來的角色：{waiting}" if waiting
+                     else "全隊的優先騎寵都騎上了，回正常的練功路線")
+        self.raising = waiting
 
     def refresh(self, session: Session) -> None:
         self.state.minimum_level = session.world.roles.minimum_level()
@@ -401,7 +415,7 @@ class Supervisor:
     def travel(self, session: Session, index: int) -> None:
         name, code, _ = ROUTE[index]
         self.finish_battle(session)
-        if index == 0 and (self.state.minimum_level or 1) < GATE_UNTIL:
+        if index == 0 and (self.raising or (self.state.minimum_level or 1) < GATE_UNTIL):
             # 未滿 GATE_UNTIL 級先在村口練（從記錄點走出村，不用傳送）：
             # 2026-11-20 實測一級隊伍直接進阿布洞穴第一場就全滅。到了等級由主迴圈清掉這筆紀錄，改傳送去阿布洞穴。
             from . import quest
@@ -541,6 +555,14 @@ class Supervisor:
                 raise ProtocolError("戰鬥後不在練功地圖（可能全滅被送回記錄點）")
             self.refresh(session)
             self.report_team(session)
+            if self.raising and self.battles % LOYALTY_RETRY_BATTLES == 0:
+                session._ride_refused.clear()        # 每隔幾場重試一次優先騎寵：騎得上就換過去
+                session.ensure_pets()
+                self.note_loyalty(session)
+                if not self.raising:
+                    self.state.retreat_until = 0.0
+                    self.state.zone_maps.pop(0, None)
+                    return "騎寵忠誠夠了"
             self.state.consecutive_heals = 0
             if self.battles % 5 == 0:
                 self.say(f"累計 {self.battles} 場：全隊最低等級 {self.state.minimum_level}，最低血量 {self.state.hp_percent}%")
@@ -610,7 +632,10 @@ class Supervisor:
                         self.run_quest(session, task)
                         self.state.failures = 0
                         continue
-                    if self.state.zone_maps.get(0) == GATE_MAP and (self.state.minimum_level or 1) >= GATE_UNTIL:
+                    if self.raising:
+                        # 練忠誠期間借用退圖機制把練功點壓在路線第 0 張（travel 會改走村口）
+                        self.state.retreat_cap, self.state.retreat_until = 0, self.clock() + 120.0
+                    elif self.state.zone_maps.get(0) == GATE_MAP and (self.state.minimum_level or 1) >= GATE_UNTIL:
                         self.state.zone_maps.pop(0)      # 村口練夠了：下一步改傳送到路線的第一張圖
                     action, detail = decide(self.state, target_level=self.target_level, now=self.clock())
                     self.save_status(action, detail)

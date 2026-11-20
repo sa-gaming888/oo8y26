@@ -85,11 +85,13 @@ def allowed_pets() -> tuple:
     馬年蛋也會依角色屬性選不同的一隻，所以不能只認一個名字。"""
     config = TrainingPlan.load().config
 
-    def names(key):
-        listed = ([config[key]] + list(config.get(key + "_alternatives", []))
-                  + list((config.get("preferred") or {}).get(key, [])))
+    wanted = config.get("preferred") or {}
+
+    def names(key, extra=()):
+        listed = [config[key]] + list(config.get(key + "_alternatives", [])) + list(wanted.get(key, [])) + list(extra)
         return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in listed))
-    return names("mount"), names("battle_pet")
+    # 練忠誠期間優先騎寵會先當戰寵，所以戰寵名單也要認得牠
+    return names("mount"), names("battle_pet", wanted.get("mount", []) if config.get("raise_loyalty") else ())
 
 
 def preferred_pets():
@@ -102,6 +104,11 @@ def preferred_pets():
     def names(key):
         return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in wanted[key]))
     return names("mount"), names("battle_pet")
+
+
+def raise_loyalty() -> bool:
+    """計畫檔的「raise_loyalty」：優先騎寵還不能騎時，要不要先讓牠出戰練忠誠。"""
+    return bool(TrainingPlan.load().config.get("raise_loyalty"))
 
 
 def pick_pet(pets, names: tuple) -> list:

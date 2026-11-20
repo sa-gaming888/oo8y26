@@ -434,7 +434,7 @@ class Session:
 
     def ensure_pets(self, *, mount=None, battle_pet=None, slots=(1, 2, 3, 4, 5)):
         """直接指定已擁有寵物，逐項等待騎乘與出戰回應；不購買、不丟寵、不循環猜狀態。"""
-        from .training import allowed_pets, pick_pet, pet_name, preferred_pets
+        from .training import allowed_pets, pick_pet, pet_name, preferred_pets, raise_loyalty
         try:
             if not hasattr(self, "_ride_refused"):
                 self._ride_refused = {}
@@ -443,6 +443,7 @@ class Session:
             fighter_names = (battle_pet,) if battle_pet is not None else default_fighters
             self._phase = "確認指定寵物"
             self.sync()
+            self._pets_verified = not self.battle.active      # 戰鬥中不能換寵物：這次沒有真的檢查
             if self.battle.active:
                 self.battle.project_party(self.world)
                 return tuple((slot, self.world.actor(slot).mount_pet_index,
@@ -459,7 +460,14 @@ class Session:
                 return mounts[0], fighters[0]
 
             def fallback(slot):
-                found = choose(self.world.actor(slot), mount_names, fighter_names)
+                actor = self.world.actor(slot)
+                if preferred is not None and raise_loyalty():
+                    # 優先騎寵忠誠不夠還不能騎：先騎備用騎寵、讓牠出戰練等級（2026-11-20 實測雷龍出戰升級，
+                    # 忠誠每級約 +6：1 級 22、4 級 39）。忠誠滿了再換回優先組合。
+                    found = choose(actor, mount_names, preferred[0])
+                    if found is not None:
+                        return found
+                found = choose(actor, mount_names, fighter_names)
                 if found is None:
                     raise ProtocolError(f"角色 {slot} 的指定寵物不存在、不能唯一確認或尚未恢復，已停止")
                 return found
@@ -506,18 +514,30 @@ class Session:
         actor = self.world.actor(slot)
         if actor.battle_pet_index == mount_index:
             self._set_battle_pet(slot, -1)
+        self._set_pet_work(slot, mount_index, 0)
+
+        def send():
+            # 實機擷取：目前操作角色自己騎乘走 func 94；func 2012 只用於其他子號，對自己的槽位送 2012 伺服器不回應。
+            if slot == self.world.roles.controlled_slot:
+                self._send_command(94, (f"R|P|{mount_index}".encode(),), time.monotonic() + self.timeout)
+            else:
+                self._send_command(2012, (slot, f"R|P|{mount_index}".encode()), time.monotonic() + self.timeout)
+
+        if actor.mount_pet_index not in (None, -1, mount_index):
+            # 已經騎著別隻時，騎乘指令只會讓人先下來（騎寵變 -1），要再下一次才會騎上新的那隻
+            # （2026-11-20 實測：原本以為是忠誠不足或出戰狀態的關係，其實是少了這一步）。
+            send()
+            end = time.monotonic() + self.timeout
+            while time.monotonic() < end and actor.mount_pet_index != -1:
+                self.poll_event(0.25)
+            if actor.mount_pet_index != -1:
+                raise ProtocolError(f"角色 {slot} 換騎寵前下不來，已停止")
         deadline = time.monotonic() + (give_up_after or self.timeout)
-        # 實機擷取：目前操作角色自己騎乘走 func 94；func 2012 只用於其他子號，
-        # 對自己的槽位送 2012 伺服器不回應。
-        if slot == self.world.roles.controlled_slot:
-            self._send_command(94, (f"R|P|{mount_index}".encode(),), deadline)
-        else:
-            self._send_command(2012, (slot, f"R|P|{mount_index}".encode()), deadline)
+        send()
         refusal = "忠".encode("gbk")
         while time.monotonic() < deadline:
             event = self.poll_event(0.25)
             if actor.mount_pet_index == mount_index:
-                self._set_pet_work(slot, mount_index, 0)
                 return True
             if event is not None and event.func in (36, 263) and any(
                     isinstance(value, bytes) and refusal in value for value in event.values):
