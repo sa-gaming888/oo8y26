@@ -1,8 +1,25 @@
 {
+  "說明": "新隊伍用的練功計畫：騎馬年寵（要有對應的馬年騎乘證；2026-11-20 實測初始寵忠誠不到 100 不能騎）、人龍出戰。名單依序比對，身上有哪一隻就用哪一隻。",
   "leader": 1,
-  "members": [2, 3, 4, 5],
-  "mount": "布林帖斯",
-  "battle_pet": "葛雷基歐",
+  "members": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "mount": "葛雷基欧",
+  "mount_alternatives": [
+    "葛雷洛比",
+    "葛雷吉鲁",
+    "葛雷马恩"
+  ],
+  "battle_pet": "利则诺顿",
+  "battle_pet_alternatives": [
+    "扬奇洛斯",
+    "邦奇诺",
+    "布鲁顿",
+    "邦浦洛斯"
+  ],
   "healing_spirit": "新手的滋潤精靈",
   "heal_below_percent": 80,
   "stages": [
@@ -11,7 +28,11 @@
       "minimum_team_level": 1,
       "location": "薩村外",
       "target_monster": "凱彼特",
-      "allowed_monsters": ["凱彼特", "凱比特", "昆伊"],
+      "allowed_monsters": [
+        "凱彼特",
+        "凱比特",
+        "昆伊"
+      ],
       "transfer": "步行出村",
       "map_id": 100
     },

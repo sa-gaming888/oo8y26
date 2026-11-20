@@ -96,8 +96,8 @@ class BattleState:
 
     def project_party(self, world):
         """BC 在每回合開始更新血量；須核對角色名與指定寵物，不能只靠位置猜。"""
-        from .training import locked_pets, pet_name
-        locked_mount, locked_fighter = locked_pets()
+        from .training import allowed_pets, pet_name
+        locked_mount, locked_fighter = allowed_pets()
         if self.own_position != 0:
             raise ProtocolError("目前僅支援隊長位於第一格的戰鬥，已停止")
         for position in range(5):
@@ -106,7 +106,7 @@ class BattleState:
             actor = world.actor(position + 1)
             if role is None or human is None or fighter is None or human.name != role.name:
                 raise ProtocolError("戰鬥角色與指定五人隊伍不符，已停止")
-            if pet_name(fighter.name) != locked_fighter or pet_name(human.mount_name) != locked_mount:
+            if pet_name(fighter.name) not in locked_fighter or pet_name(human.mount_name) not in locked_mount:
                 raise ProtocolError("戰鬥中指定騎寵或戰寵不符，已停止")
             mounts = [pet.index for pet in actor.pets.values() if pet_name(pet.name) == pet_name(human.mount_name)]
             fighters = [pet.index for pet in actor.pets.values() if pet_name(pet.name) == pet_name(fighter.name)]

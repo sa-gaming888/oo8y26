@@ -124,6 +124,7 @@ def test_main_runs_training_and_stops_on_error(maps, monkeypatch, capsys):
     monkeypatch.setattr(container, "fetch_subaccounts", lambda *a: {"1": {"password_md5": MD5}})
     monkeypatch.setattr(container, "build_config",
                         lambda env, line: {"host": env["GAME_HOST"], "port": line["port"]})
+    monkeypatch.setattr(container, "grow", lambda env, config, map_dir, target, say: None)
     monkeypatch.setattr(modules, "run_training",
                         lambda config, map_dir, profile, battles, say: seen.update(config=config, battles=battles,
                                                                                     target=profile["目標等級"]) or 0)
@@ -187,3 +188,37 @@ def test_hold_on_stop_keeps_container_alive(maps, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "停止：只接受測試帳號" in output and "不重新登入" in output and "收到停止訊號" in output
     assert container.main([], {**env, "HOLD_ON_STOP": "0"}) == 1 and len(sleeps) == 3   # 沒設：照常結束
+
+
+class FakeSupervisor:
+    def __init__(self, code, level):
+        self.code, self.state = code, type("State", (), {"minimum_level": level})()
+
+    def run(self):
+        return self.code
+
+
+def test_opening_outfits_each_character(monkeypatch):
+    monkeypatch.setattr(container.time, "sleep", lambda seconds: None)
+    calls, lines = [], []
+    pets = []
+    container.opening({}, lines.append, outfit=lambda config, slot, eat_fruit: calls.append((slot, eat_fruit)) or
+                      (["穿上新手棒子"] if slot == 1 else []),
+                      pets=lambda config, slot, discard, say: pets.append((slot, discard)), discard=("凯比",))
+    assert calls == [(slot, False) for slot in range(1, 6)]          # 智慧果不在開局吃，留給整備判斷
+    assert pets == [(slot, ("凯比",)) for slot in range(1, 6)]        # 每隻都設寵物、丟出生寵
+    assert "穿上新手棒子" in lines[0] and "沒有要處理的" in lines[1]
+    assert container.discard_names({}) == ("凯比",) and container.discard_names({"DISCARD_PETS": "none"}) == ()
+    assert container.discard_names({"DISCARD_PETS": "凯比, 特洛昆"}) == ("凯比", "特洛昆")
+
+
+def test_grow_hands_over_or_stops(monkeypatch, tmp_path):
+    monkeypatch.setattr(panels, "ACTIVITY_FILE", tmp_path / "activity.json")
+    lines = []
+    env = {"OPENING": "0"}
+    assert container.grow(env, {}, None, 140, lines.append, supervisor=FakeSupervisor(0, 123)) is None      # 接著跑英雄島
+    assert container.grow(env, {}, None, 100, lines.append, supervisor=FakeSupervisor(0, 100)) == 0         # 目標就在路線內
+    assert container.grow(env, {}, None, 140, lines.append, supervisor=FakeSupervisor(2, 50)) == 2          # 總控自己停了
+    assert container.grow(env, {}, None, 140, lines.append, supervisor=FakeSupervisor(0, 80)) == 1          # 時間到但沒練到
+    assert "沒有練到 123 級" in lines[-1]
+    assert container.grow({"OPENING": "0", "ROUTE_UNTIL": "1"}, {}, None, 140, lines.append) is None        # 不走分級路線

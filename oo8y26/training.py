@@ -58,15 +58,15 @@ class TrainingPlan:
                 raise ProtocolError("隊員生命低於練功門檻，先補給再戰鬥")
             battle_index = actor.battle_pet_index
             if battle_index is None and not confirm_battle_pet:
-                matches = [pet.index for pet in actor.pets.values() if pet_name(pet.name) == locked_pets()[1]]
+                matches = pick_pet(actor.pets.values(), allowed_pets()[1])
                 if len(matches) != 1:
                     raise ProtocolError("可用戰寵無法唯一確認，禁止遇敵")
                 battle_index = matches[0]
-            for index, expected in zip((actor.mount_pet_index, battle_index), locked_pets()):
+            for index, expected in zip((actor.mount_pet_index, battle_index), allowed_pets()):
                 if index not in actor.pets:
                     raise ProtocolError("尚未確認全隊騎寵或戰寵狀態，禁止開始戰鬥")
                 pet = actor.pets[index]
-                if pet_name(pet.name) != expected:
+                if pet_name(pet.name) not in expected:
                     raise ProtocolError("騎寵或戰寵不符合鎖定設定，禁止開始戰鬥")
                 if pet.hp * 100 < pet.max_hp * self.config["limits"]["minimum_hp_percent"]:
                     raise ProtocolError("指定寵物生命低於練功門檻，先補給再戰鬥")
@@ -77,6 +77,27 @@ def locked_pets() -> tuple:
     """目前練功計畫鎖定的（騎寵, 戰寵）名稱；名稱先經 pet_name 的繁簡統一。"""
     config = TrainingPlan.load().config
     return (pet_name(config["mount"].encode("utf-8")), pet_name(config["battle_pet"].encode("utf-8")))
+
+
+def allowed_pets() -> tuple:
+    """（可當騎寵的名稱…, 可當戰寵的名稱…）：計畫檔指定的那一隻排最前面，後面是替代名單。
+    2026-11-20 實測：初始的第二隻寵物每個角色不同（布林帖斯、布洛多斯、布拉奇多斯、斯天多斯），
+    馬年蛋也會依角色屬性選不同的一隻，所以不能只認一個名字。"""
+    config = TrainingPlan.load().config
+
+    def names(key):
+        listed = [config[key]] + list(config.get(key + "_alternatives", []))
+        return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in listed))
+    return names("mount"), names("battle_pet")
+
+
+def pick_pet(pets, names: tuple) -> list:
+    """照名單順序找：回傳第一個有對到的名稱的所有寵物索引（對不到回空的）。"""
+    for name in names:
+        found = [pet.index for pet in pets if pet_name(pet.name) == name]
+        if found:
+            return found
+    return []
 
 
 def pet_name(raw: bytes) -> str:

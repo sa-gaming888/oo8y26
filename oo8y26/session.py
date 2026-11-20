@@ -430,11 +430,11 @@ class Session:
 
     def ensure_pets(self, *, mount=None, battle_pet=None, slots=(1, 2, 3, 4, 5)):
         """直接指定已擁有寵物，逐項等待騎乘與出戰回應；不購買、不丟寵、不循環猜狀態。"""
-        from .training import locked_pets, pet_name
+        from .training import allowed_pets, pick_pet, pet_name
         try:
-            if mount is None or battle_pet is None:
-                default_mount, default_fighter = locked_pets()
-                mount, battle_pet = mount or default_mount, battle_pet or default_fighter
+            default_mounts, default_fighters = allowed_pets()
+            mount_names = (mount,) if mount is not None else default_mounts
+            fighter_names = (battle_pet,) if battle_pet is not None else default_fighters
             self._phase = "確認指定寵物"
             self.sync()
             if self.battle.active:
@@ -444,8 +444,8 @@ class Session:
             targets = []
             for slot in slots:
                 actor = self.world.actor(slot)
-                mounts = [p.index for p in actor.pets.values() if pet_name(p.name) == mount]
-                fighters = [p.index for p in actor.pets.values() if pet_name(p.name) == battle_pet]
+                mounts = pick_pet(actor.pets.values(), mount_names)
+                fighters = pick_pet(actor.pets.values(), fighter_names)
                 if len(mounts) != 1 or len(fighters) != 1 or mounts[0] == fighters[0]:
                     raise ProtocolError(f"角色 {slot} 的指定寵物不存在或不能唯一確認，已停止")
                 for index in mounts + fighters:
@@ -897,7 +897,9 @@ class Session:
                         continue
                     command = b"E" if position < 5 else b"W|FF|FF"
                     owner = position if position < 5 else position - 5
-                    if owner == 0:
+                    # 自己不一定站第一格：隊長先倒下被送回記錄點後，隊員單獨登入時自己在原本的位置
+                    # （2026-11-20 三號登入時自己在第 2 格，原本寫死第 0 格所以逃不掉）。
+                    if owner == (self.battle.own_position or 0):
                         self._send_command(14, (command,), time.monotonic() + self.timeout)
                     else:
                         self._send_command(2010, (owner, command), time.monotonic() + self.timeout)

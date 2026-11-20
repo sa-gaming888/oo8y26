@@ -1138,6 +1138,35 @@ def solo_hp_percent(world) -> int:
     return min((hp * 100 // maximum for hp, maximum in units if hp is not None and maximum), default=100)
 
 
+# 各記錄點走到村外（地圖 100，戰後全隊補滿）的路：記錄點地圖 → [(要走到的換圖格, 換過去的地圖)…]。
+# 漁村（2026-11-20 無畫面實走）：村長家 2006 的門 (20,21) → 漁村 2000 (56,48) → 東門 (108,80) → 地圖 100 (114,661)。
+GATE_ROUTES = {2006: (((20, 21), 2000), ((108, 80), 100)), 2000: (((108, 80), 100),)}
+
+
+def go_to_gate(session: Session, map_dir: Path, *, say=print) -> None:
+    """走到村外（地圖 100）。記錄點在薩姆吉爾的走原本驗證過的醫院、村口路線；在漁村的照 GATE_ROUTES 走。
+    其他記錄點沒有驗證過的路線：停止，不亂走。"""
+    world = session.world
+    if world.map_id == HEAL_MAP:
+        return
+    if world.map_id not in (1000, RECORD_MAP) and world.map_id not in GATE_ROUTES:
+        session.return_to_record()
+        time.sleep(1.0)
+    if world.map_id == RECORD_MAP:
+        session.leave_sam_hospital()
+    if world.map_id == 1000:
+        session.leave_sam_village(map_dir / "1000.dat")
+    elif world.map_id in GATE_ROUTES:
+        for goal, landing in GATE_ROUTES[world.map_id]:
+            walk(session, map_dir, goal, say=lambda message: None)
+            enter_warp(session, map_dir, goal, say=say)
+            if world.map_id != landing:
+                raise ProtocolError(f"出村路線走到地圖 {world.map_id}，不是預期的 {landing}，已停止")
+            time.sleep(0.8)
+    if world.map_id != HEAL_MAP:
+        raise ProtocolError(f"記錄點在地圖 {world.map_id}，沒有驗證過的出村路線，已停止")
+
+
 def heal_solo(session: Session, map_dir: Path, *, say=print) -> None:
     """單人補血：回記錄點 → 走出薩村 → 在村口原地遇敵打一場（那張圖戰後補滿）。打的是 10 級以下的怪，不逃跑。"""
     world = session.world
@@ -1145,10 +1174,7 @@ def heal_solo(session: Session, map_dir: Path, *, say=print) -> None:
     if session.battle.active:
         fight_present(session, say=say)
     if world.map_id != HEAL_MAP:
-        if world.map_id != RECORD_MAP:
-            session.return_to_record()
-        session.leave_sam_hospital()
-        session.leave_sam_village(map_dir / "1000.dat")
+        go_to_gate(session, map_dir, say=say)
     if world.map_id != HEAL_MAP:
         raise ProtocolError("沒有走到薩村村口，不補血，已停止")
     try:

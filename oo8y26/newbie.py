@@ -26,15 +26,49 @@ ITEM_SLOTS = 54
 FIRST_BAG_SLOT = 9
 SETTLE_SECONDS = 1.5
 
-EQUIPMENT = ("新手棒子", "新手凯", "新手的帽子")
-# 自選道具：名稱 → (選項編號, 選項名稱)。選項名稱用來核對視窗內容，對不上就停。
-CHOICES = {
-    "自选马年蛋": (1, "葛雷基欧"),
-    "自选老虎蛋": (1, "贝鲁卡"),
-    "自选人龙蛋": (1, "利则诺顿"),
-    "马年骑乘证自选包": (1, "地马年骑乘证"),
+EQUIPMENT = ("新手棒子", "新手凯", "新手的铠甲", "新手的帽子")      # 鎧甲有兩種名稱（2026-11-20 新角色拿到的是「新手的铠甲」）；背包沒有的自動略過
+# 自選道具的選項（順序＝視窗裡的順序，2026-11-20 實讀）與每個選項的屬性（地, 水, 火, 風；2026-11-20 逐一開出來實測，
+# 馬年四隻使用者也確認過是地水火風）。老虎與人龍沒有以水為主的，照「角色屬性那一項數值最高」選。
+ELEMENT_NAMES = ("地", "水", "火", "風")
+CHOICE_OPTIONS = {
+    "自选马年蛋": (("葛雷基欧", (80, 0, 0, 20)), ("葛雷洛比", (0, 80, 20, 0)),
+                   ("葛雷吉鲁", (0, 0, 80, 20)), ("葛雷马恩", (0, 0, 20, 80))),
+    "自选老虎蛋": (("贝鲁卡", (60, 40, 0, 0)), ("贝鲁伊卡", (0, 0, 30, 70)),
+                   ("格鲁西斯", (0, 0, 80, 20)), ("金格萨贝鲁", (30, 0, 0, 70))),
+    "自选人龙蛋": (("利则诺顿", (100, 0, 0, 0)), ("扬奇洛斯", (0, 30, 70, 0)), ("邦奇诺", (0, 0, 100, 0)),
+                   ("布鲁顿", (0, 0, 20, 80)), ("邦浦洛斯", (0, 0, 50, 50))),
+    "马年骑乘证自选包": (("地马年骑乘证", (100, 0, 0, 0)), ("水马年骑乘证", (0, 100, 0, 0)),
+                         ("火马年骑乘证", (0, 0, 100, 0)), ("风马年骑乘证", (0, 0, 0, 100))),
 }
+
+
+def choices_for(element: int) -> dict:
+    """依角色屬性（0 地、1 水、2 火、3 風）回傳每個自選道具要選的（選項編號, 選項名稱）：
+    選該屬性數值最高的那一項，一樣高就選排前面的。"""
+    if element not in range(4):
+        raise ValueError("角色屬性超出範圍")
+    result = {}
+    for item, options in CHOICE_OPTIONS.items():
+        best = max(range(len(options)), key=lambda index: (options[index][1][element], -index))
+        result[item] = (best + 1, options[best][0])
+    return result
+
+
+def character_element(world) -> int:
+    """角色的主屬性（狀態訊息 P1 第 17～20 欄：地、水、火、風）。讀不到或四項都是 0 就停，不亂選。"""
+    raw = world.raw.get("P1") or []
+    try:
+        values = [int(raw[index]) for index in range(17, 21)]
+    except (IndexError, ValueError):
+        raise ProtocolError("讀不到角色屬性，不開自選道具，已停止") from None
+    if max(values) <= 0:
+        raise ProtocolError("角色沒有屬性，不開自選道具，已停止")
+    return values.index(max(values))
+
+
+CHOICES = choices_for(0)      # 舊名稱：地屬性的選法（原本固定選第一項）
 RIDE_LICENSE = "*地马年骑乘证"
+RIDE_LICENSES = tuple("*" + options[0] for options in CHOICE_OPTIONS["马年骑乘证自选包"])      # 背包裡的名稱前面多一個 *
 WISDOM_FRUIT = "双倍智慧果(8小时)"
 
 
@@ -109,13 +143,22 @@ class Outfitter:
         self.windows.clear()
         self.session._send_command(17, (world.x, world.y, slot, 0), time.monotonic() + self.session.timeout)
 
+    def _consumed(self, slot: int, name: str) -> bool:
+        """確認訊息沒等到時的第二個依據：伺服器回報那一格已經不是這個道具（＝有受理）。
+        2026-11-20 實測：開資源禮包後 5 顆智慧果已進背包，但「获得物品」訊息 6 秒內沒到。不重送。"""
+        items = getattr(self.session.world, "items", None)
+        if items is None:
+            return False
+        held = items.get(slot)
+        return held is None or held[0] != name
+
     def use_expecting(self, name: str, keyword: str) -> bool:
         """使用一個道具並等待含關鍵字的訊息；背包沒有這個道具就略過（回 False）。"""
         slot = self.find(name)
         if slot is None:
             return False
         self._use(slot)
-        if not self._pump(6.0, lambda: any(keyword in text for text in self.messages)):
+        if not self._pump(6.0, lambda: any(keyword in text for text in self.messages)) and not self._consumed(slot, name):
             raise ProtocolError(f"使用「{name}」後沒有收到預期的確認，已停止")
         del self.items[slot]
         return True
@@ -152,7 +195,25 @@ def _connect(config: dict, slot: int) -> tuple:
     session.request_characters()
     session.select_character()
     session.read_initial_world()
+    finish_leftover_battle(session)
     return session, outfitter
+
+
+def finish_leftover_battle(session: Session) -> None:
+    """單獨登入時還卡在上一次留下的戰鬥裡（例如隊伍全滅、程式被中止）：先把它打完或逃掉，才能用道具、設寵物。
+    要先要一次隊伍名冊，伺服器才會補送進行中的戰鬥（2026-11-20）。"""
+    try:
+        session.request_roles()
+        end = time.monotonic() + 1.5
+        while time.monotonic() < end:
+            session.poll_event(0.25)
+    except BaseException:
+        session.close()
+        raise
+    if session.battle.active:
+        # 一律逃跑（輪數有上限，逃不掉就停）：會留下這種戰鬥通常是隊長已經倒下被送回記錄點，剩下的人打不贏；
+        # 而且沒有人下指令時這場戰鬥不會自己結束（2026-11-20 實測放了 20 分鐘還在）。
+        session.escape_battle()
 
 
 def outfit(config: dict, slot: int, *, eat_fruit: bool = True) -> list[str]:
@@ -166,16 +227,18 @@ def outfit(config: dict, slot: int, *, eat_fruit: bool = True) -> list[str]:
                 done.append("穿上" + name)
         if outfitter.use_expecting("资源礼包", "获得物品"):
             done.append("開啟资源礼包")
-        for name, (option, expected) in CHOICES.items():
+        element = character_element(session.world)
+        for name, (option, expected) in choices_for(element).items():
             if outfitter.choose(name, option, expected):
-                done.append(f"{name}→{expected}")
+                done.append(f"{name}→{expected}（{ELEMENT_NAMES[element]}屬性角色）")
     time.sleep(2.0)
     # 重新登入取得最新的背包格位，再使用新拿到的道具。
     session, outfitter = _connect(config, slot)
     with session:
         outfitter.load()
-        if outfitter.use_expecting(RIDE_LICENSE, "骑乘资格"):
-            done.append("取得騎乘資格")
+        for license in RIDE_LICENSES:
+            if outfitter.use_expecting(license, "骑乘资格"):
+                done.append("取得騎乘資格")
         if eat_fruit and outfitter.use_expecting(WISDOM_FRUIT, "学习经验的能力提升"):
             done.append("吃一顆双倍智慧果")
     return done

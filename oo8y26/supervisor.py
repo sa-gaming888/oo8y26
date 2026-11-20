@@ -40,13 +40,20 @@ ROUTE = (
 )
 GATE_MAP = 100                 # 薩村外：戰後全隊補滿
 GATE_POSITIONS = [[637, 493], [637, 494]]
+MEAT_MIN_FREE, MEAT_FREE_TO = 3, 6   # 背包空格少於幾格就丟肉、清到幾格（同「自動丟肉」模組的預設）
+EAT_MEAT_BELOW = 80             # 一號或牠的寵物血量低於這個百分比就吃肉（同「自動吃肉」模組的預設）
+GATE_UNTIL = 10                # 全隊未滿這個等級先在村口練
+GATE_ENEMY_LEVEL = 15          # 村口補血那一場：怪超過這個等級就不打
 RECORD_MAP = 1006              # 記錄點（村長家）
 HEAL_BELOW = 50                # 血量低於這個百分比就補血
 MAX_CONSECUTIVE_HEALS = 3
 TROUBLE_WINDOW = 900.0         # 秒：這段時間內同一張圖出事（補血、全滅）幾次算打不過
 TROUBLE_LIMIT = 2
 RETREAT_SECONDS = 1800.0       # 退圖後多久才再嘗試前進
-MAINTAIN_EVERY_LEVELS = 5      # 每升幾級整備（配點）一次
+MAINTAIN_EVERY_LEVELS = 1      # 每升幾級整備（配點）一次；使用者 2026-11-20：有升級就配（原本 5）
+MAINTAIN_MIN_SECONDS = 300.0   # 因為升級而配點，兩次之間至少隔多久
+MAINTAIN_FORCE_LEVELS = 5      # 累積升了這麼多級就不管間隔，直接配
+BAG_EVERY_LEVELS = 5           # 每幾級順便清一次隊員背包（要多登入一次，不必每級做）
 BATTLES_PER_ROUND = 40
 ROUND_SECONDS = 900
 MAX_FAILURES = 5               # 連續失敗幾次就停
@@ -70,6 +77,7 @@ class State:
     retreat_until: float = 0.0
     retreat_cap: int | None = None                       # 退圖期間最高只到這個路線索引
     last_maintained_level: int | None = None
+    last_maintained_at: float = float("-inf")      # 上次整備的時間（總控的時鐘）
     failures: int = 0
     verification: bool = False
     fruit_due: float | None = None                       # 智慧果最早到期的時間（總控時鐘）；None＝不知道
@@ -85,6 +93,15 @@ def allowed_zone(level: int) -> int:
     return index
 
 
+def maintain_due(state: State, now: float) -> bool:
+    """該不該回去配點：有升級就配，但兩次之間至少隔 MAINTAIN_MIN_SECONDS（低等時幾場就升一級，
+    每級都停下來讓五隻各自登入配點會大半時間沒在打怪）；累積升了 MAINTAIN_FORCE_LEVELS 級就不等了。"""
+    gained = state.minimum_level - (state.last_maintained_level or 0)
+    if gained >= MAINTAIN_FORCE_LEVELS:
+        return True
+    return gained >= MAINTAIN_EVERY_LEVELS and now - state.last_maintained_at >= MAINTAIN_MIN_SECONDS
+
+
 def decide(state: State, *, target_level: int, now: float) -> tuple:
     """回傳 (動作, 參數)。動作：stop / done / maintain / heal / travel / train。"""
     if state.verification:
@@ -95,7 +112,7 @@ def decide(state: State, *, target_level: int, now: float) -> tuple:
         return "stop", "讀不到隊伍等級"
     if state.minimum_level >= target_level:
         return "done", f"全隊最低等級 {state.minimum_level}"
-    if state.last_maintained_level is None or state.minimum_level - state.last_maintained_level >= MAINTAIN_EVERY_LEVELS:
+    if state.last_maintained_level is None or maintain_due(state, now):
         return "maintain", None
     if state.fruit_due is not None and now >= state.fruit_due + FRUIT_MARGIN:
         return "maintain", "智慧果到期"
@@ -202,6 +219,7 @@ class Supervisor:
         self.crowded_total = 0
         self.reset_done = False      # 這一次組隊失敗期間是否已讓子號清過狀態
         self.premaintained = False   # 啟動時是否已先整備過
+        self.fast = True             # 練功的每一場都用快速戰鬥；False＝原本逐回合確認的流程
 
     # ---- 小工具
     def say(self, message: str) -> None:
@@ -232,7 +250,14 @@ class Supervisor:
         while time.monotonic() < end:
             session.poll_event(0.25)
         if any(role.slot != 1 and role.status != 0 and not session.world.actor(role.slot).pets for role in roles):
-            raise ProtocolError("子號仍是殘留狀態（沒有寵物資料），先等待")
+            # 不用等它自己變離線：由隊長把隊員下線（O|編號）再一鍵登入、召喚、組隊，十幾秒就好
+            # （quest.reform，2026-11-19 實測；2026-11-20 使用者指出這段等待是流程造成的，組隊不需要等離線）。
+            from . import quest
+            self.say("隊員是單獨登入後的殘留狀態：由隊長下線再重新叫上線")
+            quest.reform(session, 1, (2, 3, 4, 5), say=self.say, summon=True)
+            end = time.monotonic() + 2.0
+            while time.monotonic() < end:
+                session.poll_event(0.25)
         session.ensure_party()
         if any(not session.world.actor(slot).pets for slot in range(2, 6)):
             raise ProtocolError("隊員寵物資料未推送")
@@ -267,6 +292,8 @@ class Supervisor:
             result = allocate_module.allocate(self.config, slot, self.ratio)
             self.say(f"子號 {slot} 配點：原有 {result['points']} 點，生命上限 {result['hp'][1]}")
             self.sleep(2.0)
+            if (self.state.minimum_level or 0) % BAG_EVERY_LEVELS == 0:
+                self.clear_bag(slot)
             left = self.fruit_left(slot)
             if left == 0:
                 session, outfitter = newbie._connect(self.config, slot)
@@ -285,6 +312,15 @@ class Supervisor:
         self.state.fruit_due = self.clock() + min(known) if len(known) == 5 else None
         if self.state.fruit_due is not None:
             self.say(f"智慧果最早 {min(known) // 60} 分鐘後到期")
+
+    def clear_bag(self, slot: int) -> None:
+        """隊員的背包只有牠自己登入時清得到：整備時順便把塞滿的肉丟掉（2026-11-20 舊隊伍四隻隊員的背包都被肉塞滿過）。"""
+        from . import newbie, quest
+        session, outfitter = newbie._connect(self.config, slot)
+        with session:
+            if session.world.items is not None and session.world.free_bag_slots() < MEAT_MIN_FREE:
+                quest.make_room(session, MEAT_FREE_TO, say=lambda message: self.say(f"子號 {slot}：{message}"))
+        self.sleep(2.0)
 
     def fruit_left(self, slot: int):
         """讀狀態訊息 A 的第 4 段（經驗加成剩餘秒數）；讀不到回 None（不亂吃）。"""
@@ -335,13 +371,10 @@ class Supervisor:
     def heal(self, session: Session) -> None:
         """回記錄點 → 出村 → 村口打一場（戰後全隊補滿）。"""
         self.finish_battle(session)
-        at_gate = session.world.map_id == GATE_MAP and [session.world.x, session.world.y] in GATE_POSITIONS
-        if not at_gate:
-            if session.world.map_id != RECORD_MAP:
-                session.return_to_record()
-            session.leave_sam_hospital()
-            session.leave_sam_village(self.map_dir / "1000.dat")
-        self.use_plan(GATE_MAP, positions=GATE_POSITIONS, maximum_enemy_level=10)
+        from . import quest
+        if session.world.map_id != GATE_MAP:
+            quest.go_to_gate(session, self.map_dir, say=self.say)
+        self.use_plan(GATE_MAP, positions=None, maximum_enemy_level=GATE_ENEMY_LEVEL)
         session.test_novice_battle(maximum_rounds=8, maximum_seconds=120)
         session.request_roles()
         self.refresh(session)
@@ -356,6 +389,14 @@ class Supervisor:
     def travel(self, session: Session, index: int) -> None:
         name, code, _ = ROUTE[index]
         self.finish_battle(session)
+        if index == 0 and (self.state.minimum_level or 1) < GATE_UNTIL:
+            # 未滿 GATE_UNTIL 級先在村口練（從記錄點走出村，不用傳送）：
+            # 2026-11-20 實測一級隊伍直接進阿布洞穴第一場就全滅。到了等級由主迴圈清掉這筆紀錄，改傳送去阿布洞穴。
+            from . import quest
+            quest.go_to_gate(session, self.map_dir, say=self.say)
+            self.state.zone_maps[index] = self.state.map_id = session.world.map_id
+            self.say(f"未滿 {GATE_UNTIL} 級先在村口練：地圖 {session.world.map_id} 座標 ({session.world.x},{session.world.y})")
+            return
         if session.world.map_id != RECORD_MAP:
             session.return_to_record()
         map_id, x, y = session.teleport(code)
@@ -414,6 +455,38 @@ class Supervisor:
         self.say(f"原位置 {origin} 太多人，改站到 {candidates[0]}（第 {self.crowded} 次）")
         self.crowded = 0
 
+    def battle_once(self, session: Session) -> None:
+        """打一場。預設用快速戰鬥（使用者 2026-11-20：只要是會遇敵的地方都要開）：這條連線第一次打之前先開快戰開關，
+        之後每場原地遇敵、用快戰打法（不送回合同步，每場約 5 秒 → 2 秒）。fast=False 時用原本逐回合確認的流程。"""
+        from . import modules, quest
+        # 練功預設全開（使用者 2026-11-20）：戰前背包快滿就丟肉、戰後一號或寵物血量低就吃肉。
+        if session.world.items is not None and session.world.free_bag_slots() < MEAT_MIN_FREE:
+            quest.make_room(session, MEAT_FREE_TO, say=lambda message: None)
+        if not self.fast:
+            session.test_novice_battle(maximum_rounds=30, maximum_seconds=290)
+            modules.eat_meat(session, EAT_MEAT_BELOW, say=self.say)
+            return
+        try:
+            if getattr(session, "_fast_battle_on", False) is not True:
+                session._send_command(2025, (f"KS|{session.sock.fileno()}|1|".encode(),), time.monotonic() + 20)
+                end = time.monotonic() + 1.5
+                while time.monotonic() < end:
+                    session.poll_event(0.25)
+                session._fast_battle_on = True
+                self.say("已開快速戰鬥")
+            session._send_command(202, (17,), time.monotonic() + 20)          # 原地遇敵
+            end = time.monotonic() + 10
+            while not session.battle.active and time.monotonic() < end:
+                session.poll_event(0.2)
+            if not session.battle.active:
+                raise ProtocolError("送出遇敵後沒有進入戰鬥")
+            session._send_command(202, (18,), time.monotonic() + 20)          # 取消後續遇敵
+        except BaseException:
+            session.close()
+            raise
+        modules.fast_fight(session)
+        modules.eat_meat(session, EAT_MEAT_BELOW, say=self.say)
+
     def train(self, session: Session, index: int) -> str:
         """在目前地圖連續打，回傳停下來的原因。每場前由總控檢查血量與等級。"""
         if self.crowded:
@@ -431,9 +504,9 @@ class Supervisor:
                 return "達到目標等級"
             if allowed_zone(self.state.minimum_level) > index and self.clock() >= self.state.retreat_until:
                 return "可以前進到下一張圖"
-            if self.state.minimum_level - (self.state.last_maintained_level or 0) >= MAINTAIN_EVERY_LEVELS:
+            if maintain_due(self.state, self.clock()):
                 return "該整備了"
-            session.test_novice_battle(maximum_rounds=30, maximum_seconds=290)
+            self.battle_once(session)
             self.battles += 1
             self.crowded_total = 0
             session.request_roles()
@@ -454,8 +527,8 @@ class Supervisor:
         try:
             self.maintain()
             self.premaintained = True
-            self.say("啟動整備完成，等子號離線後組隊")
-            self.sleep(PARTY_WAIT_SECONDS)
+            self.say("啟動整備完成，接著組隊")
+            self.sleep(3.0)
         except (ProtocolError, OSError) as error:
             self.say(f"啟動整備未完成（{error}），改在組隊後再整備")
         while True:
@@ -491,6 +564,7 @@ class Supervisor:
                     self.reset_done = False
                     if self.state.last_maintained_level is None and self.premaintained:
                         self.state.last_maintained_level = self.state.minimum_level
+                        self.state.last_maintained_at = self.clock()
                     if session.battle.active:
                         # 接手殘留戰鬥：上一圈出事或血量已低就逃跑（這些練功圖脫離戰鬥後會全隊補滿），否則打完。
                         if self.state.flee or self.state.hp_percent < HEAL_BELOW:
@@ -510,6 +584,8 @@ class Supervisor:
                         self.run_quest(session, task)
                         self.state.failures = 0
                         continue
+                    if self.state.zone_maps.get(0) == GATE_MAP and (self.state.minimum_level or 1) >= GATE_UNTIL:
+                        self.state.zone_maps.pop(0)      # 村口練夠了：下一步改傳送到路線的第一張圖
                     action, detail = decide(self.state, target_level=self.target_level, now=self.clock())
                     self.save_status(action, detail)
                     if action in ("stop", "done"):
@@ -559,8 +635,9 @@ class Supervisor:
                 self.sleep(3.0)
                 self.maintain()
                 self.state.last_maintained_level = self.state.minimum_level
-                self.say("整備完成，等子號離線後重新組隊")
-                self.sleep(PARTY_WAIT_SECONDS)
+                self.state.last_maintained_at = self.clock()
+                self.say("整備完成，重新組隊")
+                self.sleep(3.0)
             except (ProtocolError, OSError) as error:
                 self.state.failures += 1
                 self.say(f"整備失敗（第 {self.state.failures} 次）：{error}")

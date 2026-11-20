@@ -244,8 +244,11 @@ class WorldState:
                         value = int(updates[bit])
                         if attribute == "level" and not 1 <= value <= 1000:
                             raise ValueError
-                        if attribute == "mount_pet_index" and not -1 <= value <= 4:
-                            raise ValueError
+                        if attribute == "mount_pet_index":
+                            # -2：戰鬥中人物倒下被迫下騎（2026-11-20 一級隊伍在阿布洞穴全滅時收到，同一筆生命是 1）
+                            if not -2 <= value <= 4:
+                                raise ValueError
+                            value = max(value, -1)
                         setattr(self, attribute, value)
                 self._validate_health()
             elif parts[0] == b"A" and len(parts) == 8:

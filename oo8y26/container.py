@@ -19,6 +19,12 @@
   MAP_DIR             地圖目錄（預設用映像內建的 data/maps）
   API_TOKEN           查詢 API 的 token（至少 16 字元；或 API_TOKEN_FILE）。有設才開 8790 埠
   API_PORT            查詢 API 的埠（預設 8790）
+  OPENING             0＝不做新角色開局整備（穿新手裝備、開禮包、選蛋與騎乘證）；預設會做，做過的自動略過
+  DISCARD_PETS        開局要丟掉的寵物名稱（遊戲內原文，逗號分隔；預設「凯比」＝出生寵）；none＝不丟。
+                      騎寵、戰寵與 10 級以上的不丟；丟寵不可逆
+  FAST_BATTLE         0＝分級練功不開快速戰鬥；預設開（只要是會遇敵的地方都開快戰）
+  ROUTE_UNTIL         分級路線練到幾級才換成活動設定檔的練功點（預設 123）；1＝不走分級路線
+  ROUTE_HOURS         分級練功的時間上限（小時，預設 240）
   HOLD_ON_STOP        1＝停下來之後（出錯、到目標等級）容器留著不結束，也不重新登入；Kubernetes 上一定要設，
                       否則 Deployment 會一直重開、重新登入。留著的期間查詢 API 照常可查
 
@@ -53,6 +59,10 @@ MIN_TOKEN = 16
 TEAM_SIZE = 5
 HTTP_TIMEOUT = 15
 GROUP_ID = "1"
+ROUTE_UNTIL = 123        # 分級路線練到幾級才換活動設定檔的練功點（2026-11-20 舊隊伍在 123 級換到英雄島 254）
+ROUTE_HOURS = 240        # 分級練功的總時間上限（小時）
+OPENING_GAP = 2.0
+DISCARD_MAX_LEVEL = 10   # 開局只丟這個等級以下的寵物
 
 
 class Stopped(BaseException):
@@ -189,11 +199,79 @@ def build_config(env: Mapping[str, str], line: dict, fetch=fetch_subaccounts) ->
     return config
 
 
+def discard_names(env: Mapping[str, str]) -> tuple:
+    """開局要丟掉的寵物名稱（遊戲內原文，逗號分隔）；預設丟出生寵凱比（使用者 2026-11-20 指定），none＝不丟。"""
+    text = env.get("DISCARD_PETS", "凯比")
+    return () if text.strip().lower() in ("", "none") else tuple(part.strip() for part in text.split(",") if part.strip())
+
+
+def settle_pets(config: dict, slot: int, discard: tuple, say) -> None:
+    """這隻角色自己登入：設好騎寵與戰寵（名單見練功計畫檔），再把指定的寵物丟掉。
+    騎寵、戰寵不會被丟；只丟 10 級以下的（丟寵不可逆）。伺服器沒確認就停。"""
+    from . import newbie, quest
+    session, outfitter = newbie._connect(config, slot)
+    with session:
+        session.request_roles()
+        end = time.monotonic() + 1.5
+        while time.monotonic() < end:
+            session.poll_event(0.25)
+        own = session.world.roles.controlled_slot
+        session.ensure_pets(slots=(own,))
+        actor = session.world.actor(own)
+        names = {index: pet.name.decode("gbk", "replace") for index, pet in actor.pets.items()}
+        say(f"開局整備 {slot} 號：騎 {names.get(actor.mount_pet_index)}、出戰 {names.get(actor.battle_pet_index)}")
+        if discard:
+            quest.discard_pets(session, say=lambda message: say(f"開局整備 {slot} 號：{message}"),
+                               names=discard, maximum_level=DISCARD_MAX_LEVEL)
+
+
+def opening(config: dict, say, outfit=None, pets=None, discard: tuple = ()) -> None:
+    """新角色開局整備：五隻各自登入，穿新手裝備、開資源禮包、依角色屬性選自選蛋與騎乘證、取得騎乘資格，
+    設騎寵與戰寵，丟掉指定的出生寵。做過的（道具已不在背包、寵物已設好）會自動略過；任何一步伺服器沒確認就停。
+    智慧果留給之後的整備判斷要不要吃。"""
+    from . import newbie
+    outfit = outfit or newbie.outfit
+    pets = pets or settle_pets
+    for slot in range(1, TEAM_SIZE + 1):
+        steps = outfit(config, slot, eat_fruit=False)
+        say(f"開局整備 {slot} 號：" + ("、".join(steps) if steps else "道具沒有要處理的"))
+        time.sleep(OPENING_GAP)
+        pets(config, slot, discard, say)
+        time.sleep(OPENING_GAP)
+
+
+def grow(env: Mapping[str, str], config: dict, map_dir: Path, target: int, say, supervisor=None):
+    """低等階段：開局整備，再照分級路線（阿布洞穴 → 海底 → 山寨 → 地下一樓 → 漆黑洞穴 → 英雄島）練到 ROUTE_UNTIL。
+    分級練功會自己組隊、設騎寵戰寵、配點、吃智慧果、補血、打不過退圖。
+    回傳 None＝低等階段完成，可以接著跑活動設定檔的練功；回傳數字＝該停了（結束碼）。"""
+    until = min(_number(env, "ROUTE_UNTIL", ROUTE_UNTIL), target)
+    hours = _number(env, "ROUTE_HOURS", ROUTE_HOURS)
+    if env.get("OPENING", "1") != "0":
+        opening(config, say, discard=discard_names(env))
+    if until <= 1:
+        return None
+    if supervisor is None:
+        from .supervisor import Supervisor
+        supervisor = Supervisor(config, map_dir=map_dir, target_level=until, maximum_seconds=hours * 3600.0,
+                                log=lambda message: print(message, flush=True))
+        supervisor.fast = env.get("FAST_BATTLE", "1") != "0"
+    say(f"分級練功：全隊練到 {until} 級（時間上限 {hours} 小時）")
+    with panels.activity("分級練功"):
+        code = supervisor.run()
+    level = supervisor.state.minimum_level
+    if code != 0 or level is None or level < until:
+        say(f"停止：分級練功沒有練到 {until} 級（結束碼 {code}，全隊最低 {level} 級）")
+        return code or 1
+    say(f"分級練功完成：全隊最低 {level} 級")
+    return 0 if level >= target else None
+
+
 def describe(env: Mapping[str, str]) -> str:
     """啟動時印的一行：只列有沒有設，不印值。"""
     names = ("GAME_ACCOUNT", "GAME_PASSWORD", "GAME_HOST", "GAME_API", "ACCOUNT_FILE", "API_TOKEN")
     states = [f"{name}={'有' if (env.get(name) or env.get(name + '_FILE')) else '沒有'}" for name in names]
-    plain = [f"{name}={env[name]}" for name in ("ACTIVITY", "TARGET_LEVEL", "TELEPORT", "BATTLES") if env.get(name)]
+    plain = [f"{name}={env[name]}" for name in ("ACTIVITY", "TARGET_LEVEL", "TELEPORT", "BATTLES", "OPENING",
+                                                "ROUTE_UNTIL", "ROUTE_HOURS", "HOLD_ON_STOP") if env.get(name)]
     return "、".join(states + plain)
 
 
@@ -207,6 +285,12 @@ def data_writable() -> None:
         probe.unlink()
     except OSError as error:
         raise ValueError(f"資料目錄 {folder} 不能寫：{error.strerror}（容器以使用者 65532 執行）") from None
+
+
+def plan_readable() -> None:
+    """分級練功要用的練功計畫檔（騎寵、戰寵名稱）讀得到。"""
+    from .training import TrainingPlan
+    TrainingPlan.load()
 
 
 def snapshot_works() -> None:
@@ -223,7 +307,8 @@ def check(env: Mapping[str, str]) -> list:
     """不登入的自我檢查：設定檔、模組、地圖、協定表、面板整理、資料目錄。回傳問題清單（空的＝通過）。"""
     problems = []
     for step in (lambda: load_profile(env), lambda: map_dir_of(env), lambda: api_token(env),
-                 lambda: _number(env, "BATTLES"), lambda: _number(env, "API_PORT"), schemas,
+                 lambda: _number(env, "BATTLES"), lambda: _number(env, "API_PORT"),
+                 lambda: _number(env, "ROUTE_UNTIL"), lambda: _number(env, "ROUTE_HOURS"), plan_readable, schemas,
                  snapshot_works, data_writable):
         try:
             step()
@@ -290,6 +375,9 @@ def _run(environ: Mapping[str, str], say, opened) -> int:
             say(f"查詢 API 開在 {port} 埠（要帶 token）")
         else:
             say("沒設 API_TOKEN：不開查詢 API")
+        code = grow(environ, config, map_dir, int(profile.get("目標等級", 140)), say)
+        if code is not None:
+            return code
         code = modules.run_training(config, map_dir, profile, battles=battles, say=say)
         say("練功結束（到目標等級或打滿場數）" if code == 0 else f"練功結束，結束碼 {code}")
         return code
