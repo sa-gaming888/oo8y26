@@ -2108,6 +2108,7 @@ def reform(session: Session, leader: int, members: tuple, *, say=print, summon=N
 
 CARAVAN_HEAL_BELOW = 85      # 車隊隊長血量低於這個百分比就用免費烤豬排補（任務模組可依任務調整）
 CARAVAN_DISCARD = True       # 每一步前照丟棄名單清道具
+CARAVAN_STOP_AFTER_FIRST = False   # 第一隻角色做完這個任務就停（轉生這種不可逆的任務用）
 CARAVAN_FAST = False         # 每次連線後打開快戰開關（配合 FIGHTER）
 CARAVAN_ON_CONNECT = None    # 每次連線後呼叫（角色, 連線）：任務模組用來更新面板快照
 CARAVAN_PRE_HEAL = None     # 補血前先做的事（任務模組開了自動吃肉時＝先吃背包裡的肉）
@@ -2130,6 +2131,7 @@ def run_caravan(config: dict, map_dir: Path, task: int, team: tuple, controller:
     leader, formed = None, False
     rescued = set()
     relogged = set()
+    ran = set()                  # 這一次執行裡實際做過步驟的角色
 
     def connect(sub: int) -> Session:
         session = Session(timeout=20)
@@ -2183,6 +2185,10 @@ def run_caravan(config: dict, map_dir: Path, task: int, team: tuple, controller:
                 fight_present(session, say=say, allow_escape=False)
             progress = progress_of(session)
             known[leader] = progress.next_step(task)
+            if CARAVAN_STOP_AFTER_FIRST and leader in ran and known[leader] is None:
+                # 不可逆的任務（轉生）：第一隻做完先停，讓人確認結果再決定其他隻
+                print(f"任務 {task}：角色 {leader} 已完成，照設定先停下來，不接著做其他角色", flush=True)
+                return 0
             pending = [sub for sub in team if sub not in known]
             if pending:
                 target = pending[0]                       # 先把每一隻的進度都看過一遍
@@ -2229,6 +2235,7 @@ def run_caravan(config: dict, map_dir: Path, task: int, team: tuple, controller:
                 discard_listed(session, keep=unfinished_items(session, task), say=say)
                 discard_pets(session, say=say)
             say(f"任務 {task} {tasks[task]['title']}：第 {step}／{total} 步")
+            ran.add(leader)
             try:
                 progress = run_step(session, map_dir, task, step, say=say,
                                     fight=lambda current, say=say: say(

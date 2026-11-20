@@ -143,6 +143,8 @@ def team_hp_percent(world) -> int:
         actor = world.actor(slot)
         units = [(actor.hp, actor.max_hp)]
         for index in (actor.mount_pet_index, actor.battle_pet_index):
+            if index == -1 and index == actor.mount_pet_index != actor.battle_pet_index:
+                continue          # 沒有騎寵（轉生後等級太低，暫時沒有騎得上的）：只看人物和戰寵
             if index is None or index not in actor.pets:
                 raise ProtocolError("隊伍寵物狀態不完整，無法判斷血量")
             units.append((actor.pets[index].hp, actor.pets[index].max_hp))

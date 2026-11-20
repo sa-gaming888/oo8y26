@@ -63,6 +63,8 @@ class TrainingPlan:
                     raise ProtocolError("可用戰寵無法唯一確認，禁止遇敵")
                 battle_index = matches[0]
             for index, expected in zip((actor.mount_pet_index, battle_index), allowed_pets()):
+                if expected is allowed_pets()[0] and index in (None, -1) and mount_optional():
+                    continue          # 暫時沒有騎得上的寵物：不檢查騎寵
                 if index not in actor.pets:
                     raise ProtocolError("尚未確認全隊騎寵或戰寵狀態，禁止開始戰鬥")
                 pet = actor.pets[index]
@@ -104,6 +106,12 @@ def preferred_pets():
     def names(key):
         return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in wanted[key]))
     return names("mount"), names("battle_pet")
+
+
+def mount_optional() -> bool:
+    """計畫檔的「mount_optional」：沒有任何騎得上的寵物時，可以先不騎、只放戰寵。
+    2026-11-21：轉生後人物 1 級，伺服器規定騎寵等級最多比人物高 5 級，127 級的布林帖斯騎不了。"""
+    return bool(TrainingPlan.load().config.get("mount_optional"))
 
 
 def raise_loyalty() -> bool:

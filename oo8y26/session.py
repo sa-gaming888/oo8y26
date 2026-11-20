@@ -434,7 +434,7 @@ class Session:
 
     def ensure_pets(self, *, mount=None, battle_pet=None, slots=(1, 2, 3, 4, 5)):
         """直接指定已擁有寵物，逐項等待騎乘與出戰回應；不購買、不丟寵、不循環猜狀態。"""
-        from .training import allowed_pets, pick_pet, pet_name, preferred_pets, raise_loyalty
+        from .training import allowed_pets, mount_optional, pick_pet, pet_name, preferred_pets, raise_loyalty
         try:
             if not hasattr(self, "_ride_refused"):
                 self._ride_refused = {}
@@ -491,15 +491,26 @@ class Session:
                         slot, mount_index, give_up_after=RIDE_TRY_SECONDS if is_preferred else None):
                     if not is_preferred:
                         raise ProtocolError(f"角色 {slot} 騎乘被拒絕（忠誠不足），已停止")
-                    # 優先的騎寵忠誠不到 100 還不能騎（2026-11-20 實測初始雷龍忠誠 22）：這次先用備用組合，過一陣子再試
+                    # 優先的騎寵還不能騎（忠誠不到 100，或等級比人物高超過 5 級）：這次先用備用組合，過一陣子再試
                     self._ride_refused[slot] = time.monotonic()
-                    mount_index, fighter_index = fallback(slot)
-                    if actor.mount_pet_index != mount_index and not self._ride(slot, mount_index):
-                        raise ProtocolError(f"角色 {slot} 騎乘被拒絕（忠誠不足），已停止")
+                    wanted_fighter = fighter_index
+                    try:
+                        mount_index, fighter_index = fallback(slot)
+                        riding = actor.mount_pet_index == mount_index or self._ride(
+                            slot, mount_index, give_up_after=RIDE_TRY_SECONDS if mount_optional() else None)
+                    except ProtocolError:
+                        if not mount_optional() or self.sock is None:
+                            raise
+                        riding = False
+                    if not riding:
+                        if not mount_optional():
+                            raise ProtocolError(f"角色 {slot} 騎乘被拒絕（忠誠不足），已停止")
+                        # 備用的也騎不上：先不騎，只放原本想要的戰寵（2026-11-21 轉生後 1 級，沒有一隻騎得上）
+                        mount_index, fighter_index = None, wanted_fighter
                 if actor.battle_pet_index != fighter_index:
                     self._set_pet_work(slot, fighter_index, 1)
                     self._set_battle_pet(slot, fighter_index)
-                if actor.mount_pet_index != mount_index or actor.battle_pet_index != fighter_index:
+                if (mount_index is not None and actor.mount_pet_index != mount_index) or actor.battle_pet_index != fighter_index:
                     raise ProtocolError("指定騎寵或戰寵狀態未確認，已停止")
                 done.append((slot, mount_index, fighter_index))
             return tuple(done)

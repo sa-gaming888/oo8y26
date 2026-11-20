@@ -96,8 +96,9 @@ class BattleState:
 
     def project_party(self, world):
         """BC 在每回合開始更新血量；須核對角色名與指定寵物，不能只靠位置猜。"""
-        from .training import allowed_pets, pet_name
+        from .training import allowed_pets, mount_optional, pet_name
         locked_mount, locked_fighter = allowed_pets()
+        optional = mount_optional()
         if self.own_position != 0:
             raise ProtocolError("目前僅支援隊長位於第一格的戰鬥，已停止")
         for position in range(5):
@@ -106,9 +107,12 @@ class BattleState:
             actor = world.actor(position + 1)
             if role is None or human is None or fighter is None or human.name != role.name:
                 raise ProtocolError("戰鬥角色與指定五人隊伍不符，已停止")
-            if pet_name(fighter.name) not in locked_fighter or pet_name(human.mount_name) not in locked_mount:
+            unmounted = optional and not human.mount_name      # 暫時沒有騎得上的寵物（轉生後等級太低）
+            if pet_name(fighter.name) not in locked_fighter or (
+                    not unmounted and pet_name(human.mount_name) not in locked_mount):
                 raise ProtocolError("戰鬥中指定騎寵或戰寵不符，已停止")
-            mounts = [pet.index for pet in actor.pets.values() if pet_name(pet.name) == pet_name(human.mount_name)]
+            mounts = ([-1] if unmounted else
+                      [pet.index for pet in actor.pets.values() if pet_name(pet.name) == pet_name(human.mount_name)])
             fighters = [pet.index for pet in actor.pets.values() if pet_name(pet.name) == pet_name(fighter.name)]
             if len(mounts) != 1 or len(fighters) != 1 or mounts[0] == fighters[0]:
                 raise ProtocolError("戰鬥寵物索引無法唯一確認，已停止")
@@ -116,6 +120,8 @@ class BattleState:
             actor.mount_pet_index, actor.battle_pet_index = mounts[0], fighters[0]
             actor.hp, actor.max_hp = human.hp, human.max_hp
             actor.level = human.level
-            mount, pet = actor.pets[actor.mount_pet_index], actor.pets[actor.battle_pet_index]
-            mount.hp, mount.max_hp = human.mount_hp, human.mount_max_hp
+            pet = actor.pets[actor.battle_pet_index]
+            if not unmounted:
+                mount = actor.pets[actor.mount_pet_index]
+                mount.hp, mount.max_hp = human.mount_hp, human.mount_max_hp
             pet.hp, pet.max_hp = fighter.hp, fighter.max_hp

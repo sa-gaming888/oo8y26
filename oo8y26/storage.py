@@ -184,6 +184,59 @@ class PersonalPetStorage:
         return name
 
 
+    def listing(self) -> list:
+        """倉庫裡的寵物：[(名稱, 等級, 倉庫編號)…]。清單格式：`L|已存數|容量|100|` 之後每隻 8 欄
+        （名稱、等級、血、地、水、火、風、倉庫編號；2026-11-21 實讀）。"""
+        parts = self._exchange(b"O|", b"L|")
+        if parts is None:
+            raise ProtocolError("沒有收到個人寵物倉庫清單，已停止")
+        try:
+            return [(parts[index], int(parts[index + 1]), parts[index + 7]) for index in range(4, len(parts) - 7, 8)]
+        except (ValueError, IndexError):
+            raise ProtocolError("個人寵物倉庫清單格式不符，已停止") from None
+
+    def withdraw(self, key: str) -> None:
+        """領出一隻；寵物欄滿了或沒等到確認就停。"""
+        world = self.session.world
+        if len(world.pets) >= 5:
+            raise ProtocolError("寵物欄滿了，不領出，已停止")
+        before = set(world.pets)
+        if self._exchange(f"B|{key}|".encode(), b"D|") is None:
+            raise ProtocolError("領出寵物沒有收到確認，已停止")
+        end = time.monotonic() + 4.0
+        while time.monotonic() < end and set(world.pets) == before:
+            self.session.poll_event(0.3)
+        if set(world.pets) == before:
+            raise ProtocolError("領出寵物後寵物欄沒有多一隻，已停止")
+
+
+def withdraw_pet(session: Session, name: str, *, say=print) -> bool:
+    """身上沒有叫 name 的寵物時，從個人寵物倉庫領一隻；個人倉庫沒有再找共享寵物倉庫。回傳有沒有領。
+    轉生後要換騎寵時用（使用者 2026-11-21：轉生後騎老虎、放馬年）。兩邊都沒有就停。"""
+    world = session.world
+    if world.has_pet(name):
+        return False
+    personal = PersonalPetStorage(session)
+    for stored, level, key in personal.listing():
+        if stored == name:
+            time.sleep(1.5)
+            personal.withdraw(key)
+            say(f"從個人寵物倉庫領出「{name}」（{level} 級）")
+            return True
+    shared = PetStorage(session).open()
+    try:
+        match = next((pet for pet in shared.pets if pet.name == name), None)
+        if match is None:
+            raise ProtocolError(f"個人與共享寵物倉庫都沒有「{name}」，已停止")
+        time.sleep(1.5)
+        shared.withdraw(match.key)
+        say(f"從共享寵物倉庫領出「{name}」（{match.level} 級）")
+    finally:
+        if session.sock is not None:
+            shared.close()
+    return True
+
+
 def store_spare_pets(session: Session, *, say=print, keep=()) -> list:
     """只留騎寵與戰寵，其餘寵物存進個人寵物倉庫（使用者 2026-11-19 指定：放寵物倉庫，不是共享倉庫）；
     回傳存入的名稱。keep 是任務要交出去的寵物名稱，不存。"""
