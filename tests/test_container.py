@@ -170,3 +170,20 @@ def test_api_token_and_health(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_hold_on_stop_keeps_container_alive(maps, monkeypatch, capsys):
+    """Kubernetes 上容器結束會被重開、重新登入：HOLD_ON_STOP=1 時停下來就留著，直到收到停止訊號。"""
+    monkeypatch.setattr(container.signal, "signal", lambda *a: None)
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 3:
+            raise container.Stopped()
+    monkeypatch.setattr(container.time, "sleep", sleep)
+    env = {**ENV, "MAP_DIR": str(maps), "TEST_ACCOUNT": "", "HOLD_ON_STOP": "1"}       # 設定有錯：登入前就停
+    assert container.main([], env) == 0 and len(sleeps) == 3
+    output = capsys.readouterr().out
+    assert "停止：只接受測試帳號" in output and "不重新登入" in output and "收到停止訊號" in output
+    assert container.main([], {**env, "HOLD_ON_STOP": "0"}) == 1 and len(sleeps) == 3   # 沒設：照常結束

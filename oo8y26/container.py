@@ -19,6 +19,8 @@
   MAP_DIR             地圖目錄（預設用映像內建的 data/maps）
   API_TOKEN           查詢 API 的 token（至少 16 字元；或 API_TOKEN_FILE）。有設才開 8790 埠
   API_PORT            查詢 API 的埠（預設 8790）
+  HOLD_ON_STOP        1＝停下來之後（出錯、到目標等級）容器留著不結束，也不重新登入；Kubernetes 上一定要設，
+                      否則 Deployment 會一直重開、重新登入。留著的期間查詢 API 照常可查
 
 - 密碼只放在行程的記憶體，不寫檔、不進日誌（`describe()` 只列有沒有設）。
 - 出錯就停：逾時、錯誤回應、數值異常就記一行「停止：…」並結束（結束碼 1），**不自動重開**；請不要設 restart 策略。
@@ -249,9 +251,28 @@ def main(argv=None, environ: Mapping[str, str] = os.environ) -> int:
     def on_term(signum, frame):
         raise Stopped()
 
-    server = None
+    servers = []
     try:
         signal.signal(signal.SIGTERM, on_term)
+        code = _run(environ, say, lambda made: servers.append(made))
+        if environ.get("HOLD_ON_STOP") == "1":
+            # Kubernetes 的 Deployment 在容器結束後一定會重開、重新登入；留著不結束才守得住「出錯就停、不自動重試」。
+            say("已停止並登出；HOLD_ON_STOP=1：容器留著不結束、不重新登入。看完日誌後刪掉 Pod 才會重新開始")
+            while True:
+                time.sleep(3600)
+        return code
+    except Stopped:
+        say("收到停止訊號：已登出並結束")
+        return 0
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+def _run(environ: Mapping[str, str], say, opened) -> int:
+    """跑一次練功；回傳結束碼。任何錯誤都只記一行原因，不重試。"""
+    try:
         say(f"啟動：{describe(environ)}")
         line, profile = load_profile(environ)
         map_dir = map_dir_of(environ)
@@ -264,24 +285,20 @@ def main(argv=None, environ: Mapping[str, str] = os.environ) -> int:
         panels.clear_activity()
         if token:
             server = api.make_server("0.0.0.0", port, token=token, allow_refresh=False)
+            opened(server)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             say(f"查詢 API 開在 {port} 埠（要帶 token）")
         else:
             say("沒設 API_TOKEN：不開查詢 API")
-        return modules.run_training(config, map_dir, profile, battles=battles, say=say)
-    except Stopped:
-        say("收到停止訊號：已登出並結束")
-        return 0
+        code = modules.run_training(config, map_dir, profile, battles=battles, say=say)
+        say("練功結束（到目標等級或打滿場數）" if code == 0 else f"練功結束，結束碼 {code}")
+        return code
     except (ProtocolError, OSError, ValueError, KeyError) as error:
         say(f"停止：{error}")
         return 1
     except Exception as error:      # 沒料到的錯誤也要留一行原因再結束，不重試
         say(f"停止：程式錯誤 {type(error).__name__}：{error}")
         return 1
-    finally:
-        if server is not None:
-            server.shutdown()
-            server.server_close()
 
 
 if __name__ == "__main__":

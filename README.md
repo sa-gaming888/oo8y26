@@ -71,6 +71,7 @@ docker stop bot             # 登出並結束；打到一半的戰鬥下次啟�
 | `MAP_DIR` | | 地圖目錄；預設用內建的 `data/maps` |
 | `API_TOKEN` | | 查詢 API 的 token（至少 16 字元，或 `API_TOKEN_FILE`）；有設才開 8790 埠 |
 | `API_PORT` | | 查詢 API 的埠，預設 8790 |
+| `HOLD_ON_STOP` | | `1`＝停下來之後（出錯、到目標等級）容器留著不結束，也不重新登入。**Kubernetes 上一定要設**：Deployment 在容器結束後會自動重開、重新登入。看完日誌後刪掉 Pod 才會重新開始 |
 
 ## 活動設定檔（掛載）
 
