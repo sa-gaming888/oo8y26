@@ -232,6 +232,8 @@ class Supervisor:
         self.reset_done = False      # 這一次組隊失敗期間是否已讓子號清過狀態
         self.premaintained = False   # 啟動時是否已先整備過
         self.raising = []            # 優先騎寵忠誠不足、還在村口練的角色
+        self.gate_until = GATE_UNTIL # 全隊未滿這個等級先在村口練；None＝還沒決定（轉生過的隊伍會設成 0，直接飛第一張練功圖）
+        self.gate_forced = False     # 容器用環境變數指定了 gate_until：不再依轉生數自動調整
         self.before_battle = None    # 每場開打前呼叫（容器用它在兩場之間處理停止訊號）
         self.status_seconds = 60.0   # 每隔幾秒印一次隊伍狀態；0＝不印
         self.last_report = float("-inf")
@@ -280,6 +282,15 @@ class Supervisor:
         self.use_plan(session.world.map_id or 0)       # ensure_pets 會讀計畫裡鎖定的寵物名稱
         session.ensure_pets()
         self.note_loyalty(session)
+        if not self.gate_forced:
+            from . import quest
+            rebirth = quest.rebirth_of(session.world)
+            # 轉生過的隊伍帶著高等的戰寵，1 級就能直接飛阿布洞穴（龜洞）用快戰練，不必先在村口練到 10 級
+            # （使用者 2026-11-21）。
+            wanted = 0 if rebirth else GATE_UNTIL
+            if wanted != self.gate_until:
+                self.say(f"隊長轉生數 {rebirth}：{'直接飛第一張練功圖，不在村口練' if wanted == 0 else f'未滿 {wanted} 級先在村口練'}")
+            self.gate_until = wanted
         self.refresh(session)
 
     def note_loyalty(self, session: Session) -> None:
@@ -422,13 +433,13 @@ class Supervisor:
     def travel(self, session: Session, index: int) -> None:
         name, code, _ = ROUTE[index]
         self.finish_battle(session)
-        if index == 0 and (self.raising or (self.state.minimum_level or 1) < GATE_UNTIL):
+        if index == 0 and (self.raising or (self.state.minimum_level or 1) < self.gate_until):
             # 未滿 GATE_UNTIL 級先在村口練（從記錄點走出村，不用傳送）：
             # 2026-11-20 實測一級隊伍直接進阿布洞穴第一場就全滅。到了等級由主迴圈清掉這筆紀錄，改傳送去阿布洞穴。
             from . import quest
             quest.go_to_gate(session, self.map_dir, say=self.say)
             self.state.zone_maps[index] = self.state.map_id = session.world.map_id
-            self.say(f"未滿 {GATE_UNTIL} 級先在村口練：地圖 {session.world.map_id} 座標 ({session.world.x},{session.world.y})")
+            self.say(f"未滿 {self.gate_until} 級先在村口練：地圖 {session.world.map_id} 座標 ({session.world.x},{session.world.y})")
             return
         if session.world.map_id != RECORD_MAP:
             session.return_to_record()
@@ -646,7 +657,7 @@ class Supervisor:
                     if self.raising:
                         # 練忠誠期間借用退圖機制把練功點壓在路線第 0 張（travel 會改走村口）
                         self.state.retreat_cap, self.state.retreat_until = 0, self.clock() + 120.0
-                    elif self.state.zone_maps.get(0) == GATE_MAP and (self.state.minimum_level or 1) >= GATE_UNTIL:
+                    elif self.state.zone_maps.get(0) == GATE_MAP and (self.state.minimum_level or 1) >= self.gate_until:
                         self.state.zone_maps.pop(0)      # 村口練夠了：下一步改傳送到路線的第一張圖
                     action, detail = decide(self.state, target_level=self.target_level, now=self.clock())
                     self.save_status(action, detail)

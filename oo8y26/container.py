@@ -22,6 +22,7 @@
   OPENING             0＝不做新角色開局整備（穿新手裝備、開禮包、選蛋與騎乘證）；預設會做，做過的自動略過
   DISCARD_PETS        開局要丟掉的寵物名稱（遊戲內原文，逗號分隔；預設「凯比」＝出生寵）；none＝不丟。
                       騎寵、戰寵與 10 級以上的不丟；丟寵不可逆
+  GATE_UNTIL          全隊未滿幾級先在村口練（預設 10；轉生過的隊伍自動當成 0＝直接飛第一張練功圖）。有設就照設的
   FAST_BATTLE         0＝分級練功不開快速戰鬥；預設開（只要是會遇敵的地方都開快戰）
   STATUS_SECONDS      每隔幾秒把人物與隊伍狀態印到日誌（預設 60）；0＝不印
   ROUTE_UNTIL         分級路線練到幾級才換成活動設定檔的練功點（預設 123）；1＝不走分級路線
@@ -298,6 +299,8 @@ def grow(env: Mapping[str, str], config: dict, map_dir: Path, target: int, say, 
                                 log=lambda message: print(message, flush=True), sleep=patient_sleep)
         supervisor.before_battle = check_stop
         supervisor.fast = env.get("FAST_BATTLE", "1") != "0"
+        if env.get("GATE_UNTIL"):
+            supervisor.gate_until, supervisor.gate_forced = _number(env, "GATE_UNTIL"), True
         supervisor.status_seconds = float(_number(env, "STATUS_SECONDS", STATUS_SECONDS))
     say(f"分級練功：全隊練到 {until} 級（時間上限 {hours} 小時）")
     with panels.activity("分級練功"):
