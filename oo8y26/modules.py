@@ -26,6 +26,7 @@ from . import panels, quest
 from .session import ProtocolError, Session
 
 PROFILE_FILE = Path(__file__).resolve().parent.parent / "data" / "module_profiles.json"
+BEFORE_BATTLE = None      # 每場開打前呼叫（容器用它在兩場之間處理停止訊號）
 STATUS_SECONDS = 0.0      # 每隔幾秒印一次隊伍狀態；0＝不印（容器會設成 60）
 MAX_MEALS = 10             # 一次吃肉補血最多吃幾個
 MAX_ROUNDS = 400           # 一次執行最多幾輪（上限保護）
@@ -472,6 +473,8 @@ def train_round(context, modules, remaining: int, connect=connect) -> bool:
         session.request_roles()
         say(f"練功點 ({world.x},{world.y})；等級 {levels(world)}；一號經驗欄位 {getattr(world, 'exp_fields', None)}")
         while context.fought < min(remaining, int(settings["每輪場數"])) and not context.end_round:
+            if BEFORE_BATTLE is not None:
+                BEFORE_BATTLE()
             for module in modules:
                 module.before_battle(context)
             began = time.monotonic()

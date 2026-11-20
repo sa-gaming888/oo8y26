@@ -222,3 +222,14 @@ def test_grow_hands_over_or_stops(monkeypatch, tmp_path):
     assert container.grow(env, {}, None, 140, lines.append, supervisor=FakeSupervisor(0, 80)) == 1          # 時間到但沒練到
     assert "沒有練到 123 級" in lines[-1]
     assert container.grow({"OPENING": "0", "ROUTE_UNTIL": "1"}, {}, None, 140, lines.append) is None        # 不走分級路線
+
+
+def test_stop_signal_waits_for_a_safe_point(monkeypatch):
+    """停止訊號不直接中斷：到安全的停止點（兩場之間、等待中）才丟出 Stopped。"""
+    monkeypatch.setitem(container._stop, "requested", False)
+    container.check_stop()                                     # 沒收到訊號：照常
+    monkeypatch.setattr(container.time, "sleep", lambda seconds: container._stop.update(requested=True))
+    with pytest.raises(container.Stopped):
+        container.patient_sleep(30)                            # 等待中收到訊號：下一秒就停
+    with pytest.raises(container.Stopped):
+        container.check_stop()

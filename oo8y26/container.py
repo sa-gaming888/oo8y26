@@ -71,6 +71,27 @@ class Stopped(BaseException):
     """收到停止訊號（docker stop）。繼承 BaseException：不會被練功程式裡的錯誤處理吃掉。"""
 
 
+_stop = {"requested": False}
+
+
+def check_stop() -> None:
+    """安全的停止點（兩場戰鬥之間、兩隻角色的整備之間、等待中）才真的停：收到停止訊號後在這裡丟出 Stopped。
+    2026-11-20：換版時在戰鬥打到一半登出，下一個 Pod 開局就卡在殘留戰鬥逾時。"""
+    if _stop["requested"]:
+        raise Stopped()
+
+
+def patient_sleep(seconds: float) -> None:
+    """可以被停止訊號打斷的等待。"""
+    end = time.monotonic() + seconds
+    while True:
+        check_stop()
+        left = end - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(1.0, left))
+
+
 def _secret(env: Mapping[str, str], name: str) -> str:
     """讀 NAME，或 NAME_FILE 指到的檔案內容（docker secret）。"""
     value = env.get(name, "")
@@ -235,6 +256,7 @@ def opening(config: dict, say, outfit=None, pets=None, discard: tuple = ()) -> N
     outfit = outfit or newbie.outfit
     pets = pets or settle_pets
     for slot in range(1, TEAM_SIZE + 1):
+        check_stop()
         steps = outfit(config, slot, eat_fruit=False)
         say(f"開局整備 {slot} 號：" + ("、".join(steps) if steps else "道具沒有要處理的"))
         time.sleep(OPENING_GAP)
@@ -255,7 +277,8 @@ def grow(env: Mapping[str, str], config: dict, map_dir: Path, target: int, say, 
     if supervisor is None:
         from .supervisor import Supervisor
         supervisor = Supervisor(config, map_dir=map_dir, target_level=until, maximum_seconds=hours * 3600.0,
-                                log=lambda message: print(message, flush=True))
+                                log=lambda message: print(message, flush=True), sleep=patient_sleep)
+        supervisor.before_battle = check_stop
         supervisor.fast = env.get("FAST_BATTLE", "1") != "0"
         supervisor.status_seconds = float(_number(env, "STATUS_SECONDS", STATUS_SECONDS))
     say(f"分級練功：全隊練到 {until} 級（時間上限 {hours} 小時）")
@@ -338,9 +361,11 @@ def main(argv=None, environ: Mapping[str, str] = os.environ) -> int:
         return 1 if problems else 0
 
     def on_term(signum, frame):
-        raise Stopped()
+        _stop["requested"] = True      # 不在這裡直接中斷：等到安全的停止點（check_stop）才登出
+        say("收到停止訊號：打完這一場就登出")
 
     servers = []
+    _stop["requested"] = False
     try:
         signal.signal(signal.SIGTERM, on_term)
         code = _run(environ, say, lambda made: servers.append(made))
@@ -348,7 +373,7 @@ def main(argv=None, environ: Mapping[str, str] = os.environ) -> int:
             # Kubernetes 的 Deployment 在容器結束後一定會重開、重新登入；留著不結束才守得住「出錯就停、不自動重試」。
             say("已停止並登出；HOLD_ON_STOP=1：容器留著不結束、不重新登入。看完日誌後刪掉 Pod 才會重新開始")
             while True:
-                time.sleep(3600)
+                patient_sleep(3600)
         return code
     except Stopped:
         say("收到停止訊號：已登出並結束")
@@ -382,6 +407,7 @@ def _run(environ: Mapping[str, str], say, opened) -> int:
         code = grow(environ, config, map_dir, int(profile.get("目標等級", 140)), say)
         if code is not None:
             return code
+        modules.BEFORE_BATTLE = check_stop
         modules.STATUS_SECONDS = float(_number(environ, "STATUS_SECONDS", STATUS_SECONDS))
         code = modules.run_training(config, map_dir, profile, battles=battles, say=say)
         say("練功結束（到目標等級或打滿場數）" if code == 0 else f"練功結束，結束碼 {code}")

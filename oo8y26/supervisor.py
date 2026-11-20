@@ -233,6 +233,7 @@ class Supervisor:
         self.crowded_total = 0
         self.reset_done = False      # 這一次組隊失敗期間是否已讓子號清過狀態
         self.premaintained = False   # 啟動時是否已先整備過
+        self.before_battle = None    # 每場開打前呼叫（容器用它在兩場之間處理停止訊號）
         self.status_seconds = 60.0   # 每隔幾秒印一次隊伍狀態；0＝不印
         self.last_report = float("-inf")
         self.fast = True             # 練功的每一場都用快速戰鬥；False＝原本逐回合確認的流程
@@ -475,6 +476,8 @@ class Supervisor:
         """打一場。預設用快速戰鬥（使用者 2026-11-20：只要是會遇敵的地方都要開）：這條連線第一次打之前先開快戰開關，
         之後每場原地遇敵、用快戰打法（不送回合同步，每場約 5 秒 → 2 秒）。fast=False 時用原本逐回合確認的流程。"""
         from . import modules, quest
+        if self.before_battle is not None:
+            self.before_battle()         # 容器的停止檢查：兩場戰鬥之間才登出
         # 練功預設全開（使用者 2026-11-20）：戰前背包快滿就丟肉、戰後一號或寵物血量低就吃肉。
         if session.world.items is not None and session.world.free_bag_slots() < MEAT_MIN_FREE:
             quest.make_room(session, MEAT_FREE_TO, say=lambda message: None)
