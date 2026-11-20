@@ -1,0 +1,386 @@
+{
+  "source": "本機實機擷取；只保存欄位佈局與驗證筆數，不含欄位內容",
+  "server": {
+    "72": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 39
+    },
+    "80": {
+      "schemas": [
+        "SS"
+      ],
+      "verified": 30
+    },
+    "88": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 448
+    },
+    "820": {
+      "schemas": [
+        "IS"
+      ],
+      "verified": 96
+    },
+    "74": {
+      "schemas": [
+        "SS"
+      ],
+      "verified": 6
+    },
+    "46": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 1721
+    },
+    "2028": {
+      "schemas": [
+        "I"
+      ],
+      "verified": 39
+    },
+    "243": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 37
+    },
+    "839": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 74
+    },
+    "848": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 74
+    },
+    "842": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 160
+    },
+    "813": {
+      "schemas": [
+        "IS"
+      ],
+      "verified": 37
+    },
+    "846": {
+      "schemas": [
+        "IIS"
+      ],
+      "verified": 37
+    },
+    "825": {
+      "schemas": [
+        "IS"
+      ],
+      "verified": 37
+    },
+    "271": {
+      "schemas": [
+        "I"
+      ],
+      "verified": 37
+    },
+    "253": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 11
+    },
+    "2024": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 471
+    },
+    "809": {
+      "schemas": [
+        "SS"
+      ],
+      "verified": 43
+    },
+    "120": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 6
+    },
+    "78": {
+      "schemas": [
+        "SS"
+      ],
+      "verified": 37
+    },
+    "55": {
+      "schemas": [
+        "II"
+      ],
+      "verified": 53
+    },
+    "49": {
+      "schemas": [
+        "I"
+      ],
+      "verified": 74
+    },
+    "39": {
+      "schemas": [
+        "IIIIIS"
+      ],
+      "verified": 312
+    },
+    "41": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 1657
+    },
+    "30": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 37
+    },
+    "68": {
+      "schemas": [
+        "IIS"
+      ],
+      "verified": 22
+    },
+    "107": {
+      "schemas": [
+        "II"
+      ],
+      "verified": 159
+    },
+    "264": {
+      "schemas": [
+        "II"
+      ],
+      "verified": 37
+    },
+    "814": {
+      "schemas": [
+        "IS"
+      ],
+      "verified": 37
+    },
+    "42": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 180
+    },
+    "823": {
+      "schemas": [
+        "I"
+      ],
+      "verified": 410
+    },
+    "115": {
+      "schemas": [
+        "II"
+      ],
+      "verified": 57
+    },
+    "36": {
+      "schemas": [
+        "ISISSI"
+      ],
+      "verified": 355
+    },
+    "82": {
+      "schemas": [
+        "SS"
+      ],
+      "verified": 14
+    },
+    "66": {
+      "schemas": [
+        "IIIISSI"
+      ],
+      "verified": 28
+    },
+    "808": {
+      "schemas": [
+        "IIIIS"
+      ],
+      "verified": 10
+    },
+    "262": {
+      "schemas": [
+        "IIIIIII"
+      ],
+      "verified": 70
+    },
+    "22": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 58
+    },
+    "263": {
+      "schemas": [
+        "SI"
+      ],
+      "verified": 107
+    },
+    "37": {
+      "schemas": [
+        "IIIIIIIIS"
+      ],
+      "verified": 273
+    },
+    "43": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 66
+    },
+    "63": {
+      "schemas": [
+        "I"
+      ],
+      "verified": 30
+    },
+    "4": {
+      "schemas": [
+        "II"
+      ],
+      "verified": 4
+    },
+    "109": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 18
+    },
+    "211": {
+      "schemas": [
+        "I"
+      ],
+      "verified": 5
+    },
+    "15": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 317
+    },
+    "2029": {
+      "schemas": [
+        "II"
+      ],
+      "verified": 12
+    },
+    "101": {
+      "schemas": [
+        "I"
+      ],
+      "verified": 4
+    },
+    "90": {
+      "schemas": [
+        "I"
+      ],
+      "verified": 4
+    },
+    "2": {
+      "schemas": [
+        "III"
+      ],
+      "verified": 4
+    },
+    "829": {
+      "schemas": [
+        ""
+      ],
+      "verified": 1
+    },
+    "2026": {
+      "schemas": [
+        "IS"
+      ],
+      "verified": 2646
+    },
+    "2018": {
+      "schemas": [
+        "III"
+      ],
+      "verified": 316
+    },
+    "53": {
+      "schemas": [
+        "II"
+      ],
+      "verified": 4
+    },
+    "2015": {
+      "schemas": [
+        "III"
+      ],
+      "verified": 12
+    },
+    "24": {
+      "schemas": [
+        "II"
+      ],
+      "verified": 16
+    },
+    "260": {
+      "schemas": [
+        "I"
+      ],
+      "verified": 1
+    },
+    "12": {
+      "schemas": [
+        "S"
+      ],
+      "verified": 21
+    },
+    "2027": {
+      "schemas": [
+        "IS"
+      ],
+      "verified": 1216
+    },
+    "2019": {
+      "schemas": [
+        "III"
+      ],
+      "verified": 95
+    },
+    "69": {
+      "schemas": [
+        "I",
+        "S",
+        "II",
+        "IS",
+        "SI",
+        "III",
+        "IIS",
+        "IIII",
+        "IIIS",
+        "IIIII"
+      ],
+      "verified": 0
+    },
+    "850": {
+      "schemas": [
+        "I"
+      ],
+      "verified": 1
+    }
+  }
+}

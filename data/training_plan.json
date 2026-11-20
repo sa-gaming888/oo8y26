@@ -1,0 +1,31 @@
+{
+  "leader": 1,
+  "members": [2, 3, 4, 5],
+  "mount": "布林帖斯",
+  "battle_pet": "葛雷基歐",
+  "healing_spirit": "新手的滋潤精靈",
+  "heal_below_percent": 80,
+  "stages": [
+    {
+      "id": "sam_outside",
+      "minimum_team_level": 1,
+      "location": "薩村外",
+      "target_monster": "凱彼特",
+      "allowed_monsters": ["凱彼特", "凱比特", "昆伊"],
+      "transfer": "步行出村",
+      "map_id": 100
+    },
+    {
+      "id": "turtle_cave",
+      "minimum_team_level": 9,
+      "location": "龜洞",
+      "transfer": "貼心傳送",
+      "map_id": null
+    }
+  ],
+  "limits": {
+    "maximum_seconds": 1800,
+    "maximum_battles": 100,
+    "minimum_hp_percent": 60
+  }
+}
