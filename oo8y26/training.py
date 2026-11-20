@@ -86,8 +86,21 @@ def allowed_pets() -> tuple:
     config = TrainingPlan.load().config
 
     def names(key):
-        listed = [config[key]] + list(config.get(key + "_alternatives", []))
+        listed = ([config[key]] + list(config.get(key + "_alternatives", []))
+                  + list((config.get("preferred") or {}).get(key, [])))
         return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in listed))
+    return names("mount"), names("battle_pet")
+
+
+def preferred_pets():
+    """計畫檔的「preferred」：優先想用的（騎寵名單, 戰寵名單）；沒寫回 None。
+    騎得上就用這一組，騎不上（忠誠不足）才退回 mount／battle_pet 那一組。"""
+    wanted = TrainingPlan.load().config.get("preferred")
+    if not wanted:
+        return None
+
+    def names(key):
+        return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in wanted[key]))
     return names("mount"), names("battle_pet")
 
 
