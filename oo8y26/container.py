@@ -63,6 +63,7 @@ GROUP_ID = "1"
 ROUTE_UNTIL = 123        # 分級路線練到幾級才換活動設定檔的練功點（2026-11-20 舊隊伍在 123 級換到英雄島 254）
 ROUTE_HOURS = 240        # 分級練功的總時間上限（小時）
 OPENING_GAP = 2.0
+RETRY_TIMES, RETRY_WAIT = 2, 30      # 連線逾時最多重做幾次、每次隔幾秒
 STATUS_SECONDS = 60      # 每隔幾秒把人物與隊伍狀態印到日誌
 DISCARD_MAX_LEVEL = 10   # 開局只丟這個等級以下的寵物
 
@@ -222,6 +223,22 @@ def build_config(env: Mapping[str, str], line: dict, fetch=fetch_subaccounts) ->
     return config
 
 
+def with_retry(say):
+    """回傳 attempt(步驟, 名稱)：步驟因為「連線逾時」失敗時，隔 RETRY_WAIT 秒再做，最多重做 RETRY_TIMES 次。
+    使用者 2026-11-20 同意的例外（原則仍是出錯就停）：只對連線逾時；伺服器拒絕、數值異常、出現驗證照舊立刻停。
+    只能包「重做也安全」的步驟（開局整備、配點、每輪收尾：做過的部分都會自動略過）。"""
+    def attempt(step, what: str):
+        for tried in range(RETRY_TIMES + 1):
+            try:
+                return step()
+            except TimeoutError:
+                if tried == RETRY_TIMES:
+                    raise
+                say(f"{what}連線逾時（第 {tried + 1} 次），{RETRY_WAIT} 秒後重做；最多重做 {RETRY_TIMES} 次")
+                patient_sleep(RETRY_WAIT)
+    return attempt
+
+
 def discard_names(env: Mapping[str, str]) -> tuple:
     """開局要丟掉的寵物名稱（遊戲內原文，逗號分隔）；預設丟出生寵凱比（使用者 2026-11-20 指定），none＝不丟。"""
     text = env.get("DISCARD_PETS", "凯比")
@@ -255,12 +272,13 @@ def opening(config: dict, say, outfit=None, pets=None, discard: tuple = ()) -> N
     from . import newbie
     outfit = outfit or newbie.outfit
     pets = pets or settle_pets
+    attempt = with_retry(say)
     for slot in range(1, TEAM_SIZE + 1):
         check_stop()
-        steps = outfit(config, slot, eat_fruit=False)
+        steps = attempt(lambda: outfit(config, slot, eat_fruit=False), f"開局整備 {slot} 號的道具")
         say(f"開局整備 {slot} 號：" + ("、".join(steps) if steps else "道具沒有要處理的"))
         time.sleep(OPENING_GAP)
-        pets(config, slot, discard, say)
+        attempt(lambda: pets(config, slot, discard, say), f"開局整備 {slot} 號的寵物")
         time.sleep(OPENING_GAP)
 
 
@@ -408,6 +426,7 @@ def _run(environ: Mapping[str, str], say, opened) -> int:
         if code is not None:
             return code
         modules.BEFORE_BATTLE = check_stop
+        modules.RETRY = with_retry(say)
         modules.STATUS_SECONDS = float(_number(environ, "STATUS_SECONDS", STATUS_SECONDS))
         code = modules.run_training(config, map_dir, profile, battles=battles, say=say)
         say("練功結束（到目標等級或打滿場數）" if code == 0 else f"練功結束，結束碼 {code}")

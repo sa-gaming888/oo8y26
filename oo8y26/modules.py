@@ -26,6 +26,7 @@ from . import panels, quest
 from .session import ProtocolError, Session
 
 PROFILE_FILE = Path(__file__).resolve().parent.parent / "data" / "module_profiles.json"
+RETRY = None              # 容器給的「連線逾時有限次重試」：RETRY(步驟, 名稱)；None＝不重試（收尾、整備可以重做才包）
 BEFORE_BATTLE = None      # 每場開打前呼叫（容器用它在兩場之間處理停止訊號）
 STATUS_SECONDS = 0.0      # 每隔幾秒印一次隊伍狀態；0＝不印（容器會設成 60）
 MAX_MEALS = 10             # 一次吃肉補血最多吃幾個
@@ -521,9 +522,10 @@ def run_training(config: dict, map_dir: Path, profile: dict, *, battles: int, sa
         for _ in range(MAX_ROUNDS):
             if done >= battles:
                 break
-            settle(context, modules)
+            attempt = RETRY or (lambda step, what: step())
+            attempt(lambda: settle(context, modules), "每輪收尾")
             for module in modules:
-                module.prepare(context)
+                attempt(lambda module=module: module.prepare(context), f"{module.name}的整備")
             reached = train_round(context, modules, battles - done)
             done += context.fought
             say(f"這一輪打了 {context.fought} 場，累計 {done} 場")

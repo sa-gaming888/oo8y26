@@ -233,3 +233,35 @@ def test_stop_signal_waits_for_a_safe_point(monkeypatch):
         container.patient_sleep(30)                            # 等待中收到訊號：下一秒就停
     with pytest.raises(container.Stopped):
         container.check_stop()
+
+
+def test_retry_only_on_connection_timeout(monkeypatch):
+    """連線逾時有限次重做（使用者 2026-11-20 同意的例外）；其他錯誤照舊立刻往外丟。"""
+    monkeypatch.setitem(container._stop, "requested", False)
+    monkeypatch.setattr(container.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(container, "RETRY_WAIT", 0)
+    lines, calls = [], []
+    attempt = container.with_retry(lines.append)
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise TimeoutError("timed out")
+        return "好了"
+    assert attempt(flaky, "測試步驟") == "好了" and len(calls) == 3 and len(lines) == 2
+
+    def always():
+        calls.append(1)
+        raise TimeoutError("timed out")
+    calls.clear()
+    with pytest.raises(TimeoutError):
+        attempt(always, "測試步驟")
+    assert len(calls) == container.RETRY_TIMES + 1                 # 有上限
+
+    def refused():
+        calls.append(1)
+        raise container.ProtocolError("伺服器回報操作失敗")
+    calls.clear()
+    with pytest.raises(container.ProtocolError):
+        attempt(refused, "測試步驟")
+    assert len(calls) == 1                                          # 不是逾時：不重做
