@@ -44,8 +44,16 @@ class BattleState:
                 self.awaiting_round = True
                 self.window_id += 1
             elif tag == b"BC":
-                if not self.active or parts[-1] != b"" or (len(parts) - 3) % 22:
+                if parts[-1] != b"" or (len(parts) - 3) % 22:
                     raise ValueError
+                resumed = not self.active
+                if resumed:
+                    # 登入時接到進行中的戰鬥：伺服器只補送名冊（BC），沒有開場的 BP（2026-11-22 01 的二號，
+                    # 換版時被留在戰鬥裡，開局整備一登入就因此停了）。當成戰鬥進行中，自己的位置等名冊解完再補。
+                    self.active, self.own_position = True, None
+                    self.combatants = {}
+                    self.awaiting_round = True
+                    self.window_id += 1
                 count = (len(parts) - 3) // 22
                 if not 1 <= count <= 20:
                     raise ValueError
@@ -60,6 +68,8 @@ class BattleState:
                         raise ValueError
                     actors[position] = Combatant(position, row[1], level, hp, maximum, row[9], mount_hp, mount_maximum)
                 self.combatants = actors
+                if resumed:
+                    self.own_position = min((p for p in actors if p < 5), default=0)
             elif tag == b"BA":
                 if len(parts) != 4 or parts[-1] != b"" or not self.active or not self.combatants:
                     raise ValueError
