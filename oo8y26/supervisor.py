@@ -59,6 +59,7 @@ MAX_FAILURES = 5               # 連續失敗幾次就停
 PARTY_WAIT_SECONDS = 120.0     # 組隊失敗（子號狀態未清、伺服器冷卻）後等多久
 PARTY_WAIT_LIMIT = 10
 PARTY_RESET_AT = 3             # 組隊連續失敗到第幾次時，讓子號各自登入一次清狀態
+ROSTER_MISMATCH_TEXT = "戰鬥角色與指定五人隊伍不符"   # 隊長卡在一場隊伍不完整的戰鬥裡：一樣要先清狀態
 STUCK_IN_BATTLE_TEXT = "战斗中"  # 「子账号战斗中，无法召唤」：等待無效，第一次看到就清狀態
 FRUIT_SECONDS = 8 * 3600       # 一顆智慧果的效期
 FRUIT_MARGIN = 120.0           # 智慧果到期後多久內要回去整備（秒）
@@ -394,8 +395,11 @@ class Supervisor:
         return seconds.get("left")
 
     def reset_members(self) -> None:
-        """四隻子號各自單獨登入進世界一次再離線；任何一隻失敗只記錄，不中斷。"""
-        for slot in range(2, 6):
+        """五隻角色（含隊長）各自單獨登入進世界一次、逃離殘留的戰鬥再離線；任何一隻失敗只記錄，不中斷。
+        2026-11-21 01 在英雄島：一隻隊員掉出隊伍後，隊長自己卡在一場名冊不符的戰鬥裡（「战斗中，无法召唤队友」），
+        只清四隻子號解不開，重試 10 次後停了四個小時。"""
+        from . import newbie
+        for slot in range(1, 6):
             self.sleep(3.0)
             try:
                 with Session(timeout=10) as session:
@@ -405,9 +409,7 @@ class Supervisor:
                     session.request_characters()
                     session.select_character()
                     session.read_initial_world()
-                    session.sync()
-                    if session.battle.active:
-                        session.escape_battle()
+                    newbie.finish_leftover_battle(session)      # 要先要一次名冊，伺服器才會補送進行中的戰鬥
                 self.say(f"子號 {slot} 已單獨登入一次清狀態")
             except (ProtocolError, OSError) as error:
                 self.say(f"子號 {slot} 單獨登入未成功（{error}）")
@@ -622,7 +624,7 @@ class Supervisor:
                             return 2
                         self.say(f"組隊未完成（{error}），{PARTY_WAIT_SECONDS:.0f} 秒後再試（第 {party_waits} 次）")
                         session.close()
-                        stuck = STUCK_IN_BATTLE_TEXT in str(error) and not self.reset_done
+                        stuck = any(text in str(error) for text in (STUCK_IN_BATTLE_TEXT, ROSTER_MISMATCH_TEXT)) and not self.reset_done
                         if (stuck or party_waits == PARTY_RESET_AT) and "殘留狀態" not in str(error):
                             # 2026-11-18 實測：子號可能卡在「战斗中，无法召唤」的殘留狀態，由隊長下指令也解不開；
                             # 用它自己的帳號登入一次就會清掉。只在第 PARTY_RESET_AT 次失敗時做一次。
