@@ -121,6 +121,7 @@ HEARTBEAT_FIRST_SECONDS = 30.0
 HEARTBEAT_SECONDS = 30.1
 
 
+LOW_TRAINEE_GAP = 30             # 練忠誠的寵物比人物低超過這麼多級，就要回村口練
 RIDE_TRY_SECONDS = 4.0           # 試騎優先騎寵時等多久；沒騎上就當作忠誠不足
 RIDE_RETRY_SECONDS = 1800.0      # 優先騎寵被以忠誠不足拒絕後，隔多久再試一次
 
@@ -439,6 +440,7 @@ class Session:
             if not hasattr(self, "_ride_refused"):
                 self._ride_refused = {}
             self._unmounted = set()
+            self._training_low = False
             default_mounts, default_fighters = allowed_pets()
             mount_names = (mount,) if mount is not None else default_mounts
             fighter_names = (battle_pet,) if battle_pet is not None else default_fighters
@@ -504,11 +506,14 @@ class Session:
                         raise ProtocolError(f"角色 {slot} 騎乘被拒絕（忠誠不足），已停止")
                     # 優先的騎寵還不能騎（忠誠不到 100，或等級比人物高超過 5 級）：這次先用備用組合，過一陣子再試
                     self._ride_refused[slot] = time.monotonic()
-                    wanted_fighter = fighter_index
+                    wanted_fighter, wanted_mount = fighter_index, mount_index
                     try:
                         mount_index, fighter_index = fallback(slot)
-                        riding = actor.mount_pet_index == mount_index or self._ride(
-                            slot, mount_index, give_up_after=RIDE_TRY_SECONDS if mount_optional() else None)
+                        if mount_optional() and (actor.pets[mount_index].level or 0) > (actor.level or 0) + 5:
+                            riding = False        # 等級比人物高超過 5 級，伺服器一定不給騎：不必送指令去試
+                        else:
+                            riding = actor.mount_pet_index == mount_index or self._ride(
+                                slot, mount_index, give_up_after=RIDE_TRY_SECONDS if mount_optional() else None)
                     except ProtocolError:
                         if not mount_optional() or self.sock is None:
                             raise
@@ -516,9 +521,18 @@ class Session:
                     if not riding:
                         if not mount_optional():
                             raise ProtocolError(f"角色 {slot} 騎乘被拒絕（忠誠不足），已停止")
-                        # 備用的也騎不上：先不騎，只放原本想要的戰寵（2026-11-21 轉生後 1 級，沒有一隻騎得上）
-                        mount_index, fighter_index = None, wanted_fighter
-                        self._unmounted.add(slot)        # 這不是練忠誠能解決的（是等級規定）：不必留在村口
+                        trainee = wanted_mount if wanted_mount in actor.pets else None
+                        too_high = trainee is not None and (actor.pets[trainee].level or 0) > (actor.level or 0) + 5
+                        if trainee is not None and not too_high and raise_loyalty():
+                            # 備用的也騎不上，但想騎的那隻等級是夠的（＝卡在忠誠）：先不騎，讓牠出戰把忠誠練上來
+                            # （2026-11-21：剛抓到的 93 級布林帖斯忠誠 74，伺服器回「该骑宠的忠小于100」）。
+                            mount_index, fighter_index = None, trainee
+                            if (actor.pets[trainee].level or 0) < (actor.level or 0) - LOW_TRAINEE_GAP:
+                                self._training_low = True     # 牠比人物低很多：要回村口打低等怪才不會被秒殺
+                        else:
+                            # 沒有一隻騎得上、也不是忠誠的問題（騎寵等級最多比人物高 5 級）：先不騎，只放原本想要的戰寵
+                            mount_index, fighter_index = None, wanted_fighter
+                            self._unmounted.add(slot)
                 if actor.battle_pet_index != fighter_index:
                     self._set_pet_work(slot, fighter_index, 1)
                     self._set_battle_pet(slot, fighter_index)

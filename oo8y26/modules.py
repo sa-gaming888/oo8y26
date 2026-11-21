@@ -551,6 +551,7 @@ def run_quest(config: dict, map_dir: Path, profile: dict, task: int) -> int:
     quest.STORE_SPARE_PETS = bool(settings.get("多餘寵物存倉庫", True))
     quest.CARRY_ITEMS = tuple(settings.get("隨身道具", ()))
     quest.CARAVAN_STOP_AFTER_FIRST = bool(settings.get("第一隻做完就停", False))
+    quest.STORE_AFTER_DONE = tuple(settings.get("完成後存個倉", ()))
     fast = bool(settings.get("快速戰鬥", False))
     quest.CARAVAN_FAST, quest.FIGHTER = fast, (fast_fight if fast else None)
     quest.CARAVAN_PRE_HEAL = ((lambda session, say: eat_meat(session, quest.CARAVAN_HEAL_BELOW, say=say))

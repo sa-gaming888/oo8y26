@@ -1269,6 +1269,7 @@ def heal_with_items(session: Session, *, say=print) -> None:
 
 WHOLE_MAP_CELLS = 40000      # 沒有地圖檔時，格子數超過這個就不向伺服器要整張圖，只要路線附近那一塊
 AREA_MARGIN = 30             # 只要一塊時，起點與終點往外多要幾格
+FREE_ROUTE = False           # 跑不屬於任何任務的路線（抓寵指引）：不檢查任務進度；要搭配 STOP_AFTER_CAPTURE
 CARRY_ITEMS = ()             # 這個任務要帶在身上的道具名稱（不收進倉庫；缺了從倉庫領，領不齊就停）
 STOP_AFTER_CAPTURE = False   # 抓到腳本要的寵物後先停下來，不接著做下一段（轉生前要先讓人確認）
 STORE_SPARE_PETS = True      # --keep-pets 時關掉：共享寵物倉庫滿了（10 格），隊員的多餘寵物只能留在身上
@@ -1302,7 +1303,7 @@ def run_step(session: Session, map_dir: Path, task: int, step: int, *, say=print
         # 紅暴任務交勾玉時空 3 格還是被說「道具已經滿了」，所以盡量清到 6 格（只丟肉，沒有肉可丟就算了）。
         make_room(session, 6, say=say)
     before = progress_of(session)
-    if before.next_step(task) != step:
+    if not FREE_ROUTE and before.next_step(task) != step:
         raise ProtocolError(f"任務 {task} 目前不是輪到第 {step} 步，已停止")
     path = script_dir / f"{task}-{step}.txt"
     if script_dir == SCRIPT_DIR and (OVERRIDE_DIR / path.name).is_file():
@@ -2108,6 +2109,7 @@ def reform(session: Session, leader: int, members: tuple, *, say=print, summon=N
 
 CARAVAN_HEAL_BELOW = 85      # 車隊隊長血量低於這個百分比就用免費烤豬排補（任務模組可依任務調整）
 CARAVAN_DISCARD = True       # 每一步前照丟棄名單清道具
+STORE_AFTER_DONE = ()        # 角色做完這個任務後，要存進個人道具倉庫的道具名稱
 CARAVAN_STOP_AFTER_FIRST = False   # 第一隻角色做完這個任務就停（轉生這種不可逆的任務用）
 CARAVAN_FAST = False         # 每次連線後打開快戰開關（配合 FIGHTER）
 CARAVAN_ON_CONNECT = None    # 每次連線後呼叫（角色, 連線）：任務模組用來更新面板快照
@@ -2132,6 +2134,7 @@ def run_caravan(config: dict, map_dir: Path, task: int, team: tuple, controller:
     rescued = set()
     relogged = set()
     ran = set()                  # 這一次執行裡實際做過步驟的角色
+    stored_after = set()         # 做完後已經存過獎勵的角色
 
     def connect(sub: int) -> Session:
         session = Session(timeout=20)
@@ -2185,6 +2188,11 @@ def run_caravan(config: dict, map_dir: Path, task: int, team: tuple, controller:
                 fight_present(session, say=say, allow_escape=False)
             progress = progress_of(session)
             known[leader] = progress.next_step(task)
+            if STORE_AFTER_DONE and leader in ran and known[leader] is None and leader not in stored_after:
+                # 這隻剛做完這個任務：把指定的獎勵存進牠自己的個人道具倉庫（只有牠當隊長的這條連線碰得到牠的背包）
+                stored_after.add(leader)
+                from .storage import store_named
+                store_named(session, STORE_AFTER_DONE, say=say)
             if CARAVAN_STOP_AFTER_FIRST and leader in ran and known[leader] is None:
                 # 不可逆的任務（轉生）：第一隻做完先停，讓人確認結果再決定其他隻
                 print(f"任務 {task}：角色 {leader} 已完成，照設定先停下來，不接著做其他角色", flush=True)

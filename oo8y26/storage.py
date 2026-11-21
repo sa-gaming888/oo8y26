@@ -339,6 +339,55 @@ def store_items(session: Session, keep, *, say=print) -> list:
     return stored
 
 
+def store_named(session: Session, names, *, say=print) -> list:
+    """把背包裡指定名稱的道具存進個人道具倉庫（使用者 2026-11-21：紅暴任務完成後，英雄的祝福存個倉）。
+    和 store_items 不同：只存點名的這幾樣，綁定的也照樣試（store_items 一律跳過綁定道具）。
+    伺服器不收（沒回確認）就記一行、留在身上，不算錯；倉庫滿了也只是記一行。回傳存進去的名稱。"""
+    world = session.world
+    if world.items is None or session.battle.active:
+        return []
+    slots = [slot for slot in sorted(world.items) if 9 <= slot <= 23 and world.items[slot][0] in names]
+    if not slots:
+        return []
+    session.sync()
+
+    def exchange(data: bytes, prefix: bytes, seconds=6.0):
+        try:
+            session._send_command(821, (2, data), time.monotonic() + session.timeout)
+        except BaseException:
+            session.close()
+            raise
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            event = session.poll_event(0.3)
+            if event is not None and event.func == 820 and event.values[0] == 2 and event.values[1].startswith(prefix):
+                return event.values[1].split(b"|")
+        return None
+
+    listing = exchange(b"O|", b"L|")
+    try:
+        used, capacity = int(listing[1]), int(listing[2])
+    except (TypeError, ValueError, IndexError):
+        raise ProtocolError("沒有收到個人道具倉庫清單或格式不符，已停止") from None
+    stored = []
+    for slot in slots:
+        name = world.items[slot][0]
+        if used + len(stored) >= capacity:
+            say(f"個人道具倉庫滿了（{capacity} 格），「{name}」留在身上")
+            break
+        time.sleep(2.0)
+        if exchange(b"C|%d|" % slot, b"Z|") is None:
+            say(f"「{name}」伺服器不收進個人道具倉庫，留在身上")
+            continue
+        end = time.monotonic() + 3.0
+        while slot in world.items and time.monotonic() < end:
+            session.poll_event(0.3)
+        stored.append(name)
+    if stored:
+        say(f"存入個人道具倉庫（{used + len(stored)}／{capacity}）：" + "、".join(stored))
+    return stored
+
+
 def withdraw_items(session: Session, names, *, say=print) -> list:
     """把個人道具倉庫裡指定名稱的道具領到背包（已經在背包的不領）；回傳領出的名稱。
     轉生要把四大洞窟的證明帶在身上（使用者 2026-11-20）。封包同 store_items：開啟 `O|`、查內容 `X|編號|`、領出 `B|編號|`。

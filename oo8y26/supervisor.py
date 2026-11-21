@@ -305,7 +305,7 @@ class Supervisor:
             self.say(f"暫時沒有騎得上的寵物、先不騎的角色：{riderless}（騎寵等級最多只能比人物高 5 級；之後會定時再試）")
         self.riderless = riderless
         if waiting != self.raising:
-            self.say(f"騎寵忠誠不足、先在村口讓牠出戰練起來的角色：{waiting}" if waiting
+            self.say(f"騎寵忠誠不足、先不騎讓牠出戰練起來的角色：{waiting}" if waiting
                      else "全隊的優先騎寵都騎上了，回正常的練功路線")
         self.raising = waiting
 
@@ -433,7 +433,7 @@ class Supervisor:
     def travel(self, session: Session, index: int) -> None:
         name, code, _ = ROUTE[index]
         self.finish_battle(session)
-        if index == 0 and (self.raising or (self.state.minimum_level or 1) < self.gate_until):
+        if index == 0 and (getattr(self, "raising_low", False) or (self.state.minimum_level or 1) < self.gate_until):
             # 未滿 GATE_UNTIL 級先在村口練（從記錄點走出村，不用傳送）：
             # 2026-11-20 實測一級隊伍直接進阿布洞穴第一場就全滅。到了等級由主迴圈清掉這筆紀錄，改傳送去阿布洞穴。
             from . import quest
@@ -654,8 +654,10 @@ class Supervisor:
                         self.run_quest(session, task)
                         self.state.failures = 0
                         continue
-                    if self.raising:
-                        # 練忠誠期間借用退圖機制把練功點壓在路線第 0 張（travel 會改走村口）
+                    self.raising_low = bool(self.raising) and bool(getattr(session, "_training_low", False))
+                    if self.raising_low:
+                        # 練忠誠的寵物等級比人物低很多時，借用退圖機制把練功點壓在路線第 0 張（travel 會改走村口）；
+                        # 等級相近的（剛抓到的 93 級布林帖斯）就在原本的練功圖邊打邊練
                         self.state.retreat_cap, self.state.retreat_until = 0, self.clock() + 120.0
                     elif self.state.zone_maps.get(0) == GATE_MAP and (self.state.minimum_level or 1) >= self.gate_until:
                         self.state.zone_maps.pop(0)      # 村口練夠了：下一步改傳送到路線的第一張圖
