@@ -74,7 +74,8 @@ class BattleState:
                     self.sent.add((round_number, self.pending_initial))
                     self.pending_initial = None
             # BX 為實機觀察到的動畫腳本前綴（BX|位置|BH…），與 BH／BY 同屬不需解析的演出資料。
-            elif tag not in (b"BH", b"BY", b"BX", b"BE", b"bn", b"bg"):   # BE：逃跑演出（單人逃跑實測 BE|e0|f1|）
+            # BT：捕捉演出（2026-11-21 抓 1 級布林帖斯時實測 `BT|a0|r10|f0|BY|…`，人物先下捕捉時它排在最前面）
+            elif tag not in (b"BH", b"BY", b"BX", b"BE", b"BT", b"bn", b"bg"):   # BE：逃跑演出（單人逃跑實測 BE|e0|f1|）
                 raise ValueError
         except (ValueError, IndexError):
             raise ProtocolError("戰鬥名冊或回合資料異常，已停止（原文開頭：%s）"

@@ -959,12 +959,18 @@ def capture_battle(session: Session, name: str, *, maximum_rounds=60) -> bool:
                 session.escape_battle(maximum_rounds=20)
                 return tried
             if rounds == 0:
-                named = [unit.position for unit in enemies if unit.name.decode("gbk", "replace") == name]
+                named = [unit.position for unit in enemies if unit.name.decode("gbk", "replace") == name
+                         and (CAPTURE_LEVEL is None or unit.level == CAPTURE_LEVEL)]
                 wanted = named[0] if named else None
             if rounds >= CAPTURE_ROUNDS:
                 wanted = None                    # 這一場抓不到：把剩下的打掉，換下一場
             target = next((unit for unit in enemies if unit.position == wanted), None)
             others = [unit for unit in enemies if unit.position != wanted]
+            if CAPTURE_TRACE is not None and wanted is not None:
+                pet_unit = battle.combatants.get(5)
+                CAPTURE_TRACE(f"  第 {rounds + 1} 回合：目標 {'血量 %d/%d' % (target.hp, target.max_hp) if target else '不在場上了'}；"
+                              f"其他怪 {len(others)} 隻；自己 {me.hp if me else '?'}/{me.max_hp if me else '?'}；"
+                              f"戰寵 {pet_unit.hp if pet_unit else '沒上場'}；手下留情欄位 {mercy}")
             for position in (0, 5):
                 unit = battle.combatants.get(position)
                 if unit is None or unit.hp <= 0 or battle.ready_mask & (1 << position):
@@ -999,6 +1005,161 @@ def capture_battle(session: Session, name: str, *, maximum_rounds=60) -> bool:
     except BaseException:
         session.close()
         raise
+
+
+def capture_party(session: Session, name: str, *, level=None, maximum_battles=600, heal_below=60, say=print) -> None:
+    """全隊一起原地遇敵，直到隊長的寵物欄出現叫 name（指定等級）的寵物。開快戰，不送回合同步。
+
+    沒有目標的場次全隊用快戰打掉；有目標時隊長下捕捉（`T|目標`）、隊長的戰寵用手下留情把牠削到 1 滴血，
+    四隻隊員和牠們的寵物只打其他的怪，其他的怪清完就防禦／不動作。2026-11-21：隊長單人在 93 級怪堆裡抓 1 級的
+    布林帖斯被打死五次，所以改成全隊。每場前隊長血量低於 heal_below 就用免費烤豬排補。"""
+    from . import modules
+    world = session.world      # 注意：session.battle 每場戰鬥會換成新的物件，不能先存起來用
+
+    def match(unit):
+        return unit.name.decode("gbk", "replace") == name and (level is None or unit.level == level)
+
+    def have():
+        return any(pet.name.decode("gbk", "replace") == name and (level is None or pet.level == level)
+                   for pet in world.pets.values())
+
+    if have():
+        return
+    if len(world.pets) >= 5:
+        raise ProtocolError("寵物欄滿了，沒有位置放抓到的寵物，已停止")
+    fighter = world.battle_pet_index
+    if fighter not in world.pets:
+        # 重組隊伍後這條連線有時不知道自己的戰寵是哪一隻：找會手下留情的那隻，設成出戰
+        fighter = next((index for index in world.pets if MERCY_SKILL in world.pet_skills.get(index, [])), None)
+        if fighter is None:
+            raise ProtocolError("隊長身上沒有會手下留情的寵物，已停止")
+        # 只是這條連線不知道索引，不重送出戰指令：2026-11-21 在這裡重設戰寵之後，送出遇敵就收不到開戰通知
+    skills = world.pet_skills.get(fighter, [])
+    if MERCY_SKILL not in skills:
+        raise ProtocolError(f"隊長的戰寵（寵物欄第 {fighter} 格）還不會手下留情（技能：{[x for x in skills if x]}），已停止")
+    mercy = skills.index(MERCY_SKILL)
+    spot_map, seen, attempts = world.map_id, set(), 0
+    try:
+        session._send_command(2025, (f"KS|{session.sock.fileno()}|1|".encode(),), time.monotonic() + 20)
+    except BaseException:
+        session.close()
+        raise
+    session._fast_battle_on = True
+    end = time.monotonic() + 1.5
+    while time.monotonic() < end:
+        session.poll_event(0.25)
+
+    def pump(seconds, done):
+        ended = False
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            event = session.poll_event(0.05)
+            if event is not None and (event.func == 101 or (event.func == 7 and event.values[0] == 0)):
+                ended = True
+            if ended or done():
+                break
+        return ended
+
+    started = time.monotonic()
+    for battles in range(maximum_battles):
+        if have():
+            say(f"抓到 {level if level is not None else ''} 級的「{name}」（打了 {battles} 場，其中 {attempts} 場下過捕捉）")
+            return
+        if battles and battles % 10 == 0:
+            say(f"已打 {battles} 場（每場 {(time.monotonic() - started) / battles:.1f} 秒），下過捕捉 {attempts} 場；"
+                f"隊長血量 {solo_hp_percent(world)}%；出現過：{'、'.join(sorted(seen))[:120]}")
+        if world.map_id != spot_map:
+            raise ProtocolError(f"人已經不在抓寵的地圖（現在在 {world.map_id}），已停止")
+        if not session.battle.active and heal_below and solo_hp_percent(world) < heal_below:
+            heal_with_items(session, say=say)
+        if not session.battle.active:
+            for attempt in range(2):
+                try:
+                    session._send_command(202, (17,), time.monotonic() + session.timeout)
+                except BaseException:
+                    session.close()
+                    raise
+                end = time.monotonic() + 10.0
+                while not session.battle.active and time.monotonic() < end:
+                    session.poll_event(0.2)
+                if not session.battle.active:
+                    # 2026-11-21：帶隊時送出遇敵後這條連線沒收到開戰通知，其實已經在戰鬥裡；要一次名冊伺服器才會補送
+                    session.request_roles()
+                    end = time.monotonic() + 3.0
+                    while not session.battle.active and time.monotonic() < end:
+                        session.poll_event(0.2)
+                if session.battle.active:
+                    break
+            if not session.battle.active:
+                raise ProtocolError("原地遇敵沒有進入戰鬥，已停止")
+            try:
+                session._send_command(202, (18,), time.monotonic() + session.timeout)
+            except BaseException:
+                session.close()
+                raise
+        end = time.monotonic() + 4.0
+        while not session.battle.combatants and time.monotonic() < end:
+            session.poll_event(0.2)
+        seen.update(f"{unit.name.decode('gbk', 'replace')} Lv{unit.level}"
+                    for position, unit in session.battle.combatants.items() if position >= 10)
+        if not any(position >= 10 and match(unit) for position, unit in session.battle.combatants.items()):
+            modules.fast_fight(session)
+            continue
+        say(f"第 {battles + 1} 場出現目標，隊長下捕捉、隊員清其他的怪")
+        attempts += 1
+        wanted, ended = None, False
+        try:
+            for rounds in range(CAPTURE_ROUNDS + 30):
+                ended = pump(8.0, lambda: bool(session.battle.combatants) and not session.battle.awaiting_round)
+                if ended:
+                    break
+                enemies = [unit for position, unit in sorted(session.battle.combatants.items()) if position >= 10 and unit.hp > 0]
+                if not enemies:
+                    ended = pump(6.0, lambda: any(p >= 10 and u.hp > 0 for p, u in session.battle.combatants.items()))
+                    if ended:
+                        break
+                    continue
+                if wanted is None:
+                    wanted = next((unit.position for unit in enemies if match(unit)), -1)
+                target = next((unit for unit in enemies if unit.position == wanted), None)
+                if rounds >= CAPTURE_ROUNDS:
+                    target = None                 # 抓太久了：這一隻放棄，全部打掉換下一場
+                others = [unit for unit in enemies if target is None or unit.position != target.position]
+                for position in range(10):
+                    unit = session.battle.combatants.get(position)
+                    if unit is None or unit.hp <= 0 or session.battle.ready_mask & (1 << position):
+                        continue
+                    if position == 0:
+                        command = f"T|{target.position:X}" if target else f"H|{others[0].position:X}"
+                    elif position == 5 and target is not None and target.hp > 1:
+                        command = f"W|{mercy:X}|{target.position:X}"
+                    elif position < 5:
+                        command = f"H|{others[0].position:X}" if others else "G"
+                    else:
+                        command = f"W|0|{others[0].position:X}" if others else "W|FF|FF"
+                    owner = position if position < 5 else position - 5
+                    if owner == 0:
+                        session._send_command(14, (command.encode(),), time.monotonic() + session.timeout)
+                    else:
+                        session._send_command(2010, (owner, command.encode()), time.monotonic() + session.timeout)
+                session.battle.awaiting_round = True
+                current = session.battle.round
+                ended = pump(35.0, lambda: not session.battle.awaiting_round and session.battle.round != current)
+                if ended:
+                    break
+            else:
+                raise ProtocolError("抓寵那一場回合數超過上限，已停止")
+            pump(3.0, lambda: False)
+            session.battle.active = False
+        except BaseException:
+            session.close()
+            raise
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end:
+            session.poll_event(0.3)
+    if not have():
+        raise ProtocolError(f"打了 {maximum_battles} 場（{attempts} 場下過捕捉）還沒抓到「{name}」"
+                            f"（出現過：{'、'.join(sorted(seen))[:200]}），已停止")
 
 
 MERCY_PRICE = 10000          # 商城石幣分頁「手下留情」罐頭的價格上限（2026-11-19 實測 10000 石幣）
@@ -1070,25 +1231,48 @@ def capture(session: Session, name: str, *, say=print) -> None:
     teach_mercy(session, say=say)
     say(f"單人原地遇敵，直到抓到「{name}」")
     seen, attempts = set(), 0
+    spot_map = world.map_id
     for battles in range(MAX_CAPTURE_BATTLES):
         if world.has_pet(name):
             say(f"抓到「{name}」（打了 {battles} 場，其中 {attempts} 場下過捕捉）")
             return
+        if battles and battles % 50 == 0:
+            say(f"已打 {battles} 場，下過捕捉 {attempts} 場，還沒抓到；出現過：{'、'.join(sorted(seen))[:160]}")
         if world.free_bag_slots() < HUNT_FREE_SLOTS:
             # 一場會同時掉好幾樣（肉先佔格）：只剩一兩格時任務道具會掉不進來（使用者 2026-11-19 提醒；
             # 四寶玉之謎二號、五號各打 40 場沒拿到寶珠）。每場開打前都留足空位。
             make_room(session, HUNT_FREE_SLOTS + 1, say=lambda message: None)
             if world.free_bag_slots() < 1:
                 raise ProtocolError("背包沒有空位，任務道具掉不進來，已停止")
+        if CAPTURE_FIGHTER and not session.battle.active:
+            # 戰寵被打倒會被撤下（戰寵索引變 -1），之後人物單獨挨打、也沒有手下留情可用：每場前確認牠還在場上。
+            # 2026-11-21 隊長連續被打倒 12 次，逐回合紀錄才看出「戰寵沒上場」。
+            own = world.roles.controlled_slot
+            actor = world.actor(own)
+            index = next((i for i, pet in actor.pets.items()
+                          if pet.name.decode("gbk", "replace") == CAPTURE_FIGHTER), None)
+            if index is not None and actor.battle_pet_index != index and actor.pets[index].hp > 0:
+                session._set_pet_work(own, index, 1)
+                session._set_battle_pet(own, index)
+                say(f"戰寵「{CAPTURE_FIGHTER}」不在場上，重新派上場")
+        if CAPTURE_HEAL_BELOW and not session.battle.active and solo_hp_percent(world) < CAPTURE_HEAL_BELOW:
+            # 單人連續打高等怪血會一路掉：2026-11-21 隊長抓布林帖斯時被打死送回村子三次（看起來像「遇敵沒有進入戰鬥」）。
+            heal_with_items(session, say=say)
+        if world.map_id != spot_map:
+            raise ProtocolError(f"人已經不在抓寵的地圖（現在在 {world.map_id}，多半是被打倒送回記錄點），已停止")
         if not session.battle.active:
-            try:
-                session._send_command(202, (17,), time.monotonic() + session.timeout)      # 原地遇敵
-            except BaseException:
-                session.close()
-                raise
-            end = time.monotonic() + 10.0
-            while not session.battle.active and time.monotonic() < end:
-                session.poll_event(0.2)
+            for attempt in range(2):
+                # 偶爾送出遇敵後沒有開打（練功模組也遇過）：只補送一次，還是沒有才停
+                try:
+                    session._send_command(202, (17,), time.monotonic() + session.timeout)      # 原地遇敵
+                except BaseException:
+                    session.close()
+                    raise
+                end = time.monotonic() + 10.0
+                while not session.battle.active and time.monotonic() < end:
+                    session.poll_event(0.2)
+                if session.battle.active:
+                    break
             if not session.battle.active:
                 raise ProtocolError("原地遇敵沒有進入戰鬥，已停止")
             try:
@@ -1101,7 +1285,23 @@ def capture(session: Session, name: str, *, say=print) -> None:
             session.poll_event(0.2)
         seen.update(f"{unit.name.decode('gbk', 'replace')} Lv{unit.level}"
                     for position, unit in session.battle.combatants.items() if position >= 10)
-        attempts += capture_battle(session, name)
+        present = any(position >= 10 and unit.name.decode("gbk", "replace") == name
+                      and (CAPTURE_LEVEL is None or unit.level == CAPTURE_LEVEL)
+                      for position, unit in session.battle.combatants.items())
+        if CAPTURE_ESCAPE and not present:
+            # 這一場沒有要抓的：直接逃跑，只挨一回合（單人對一整群高等怪硬打會被打死，2026-11-21 隊長死了四次）
+            session.escape_battle(maximum_rounds=20)
+        elif CAPTURE_FAST and not present:
+            # 這一場沒有要抓的：用快戰打法打掉（使用者 2026-11-21：抓一級寵要用快戰）
+            from . import modules
+            if getattr(session, "_fast_battle_on", False) is not True:
+                session._send_command(2025, (f"KS|{session.sock.fileno()}|1|".encode(),), time.monotonic() + 20)
+                session._fast_battle_on = True
+            modules.fast_fight(session)
+        else:
+            if present and CAPTURE_LEVEL is not None:
+                say(f"出現 {CAPTURE_LEVEL} 級的「{name}」（第 {battles + 1} 場），下捕捉")
+            attempts += capture_battle(session, name)
         end = time.monotonic() + 2.0
         while time.monotonic() < end:
             session.poll_event(0.3)
@@ -1270,6 +1470,12 @@ def heal_with_items(session: Session, *, say=print) -> None:
 WHOLE_MAP_CELLS = 40000      # 沒有地圖檔時，格子數超過這個就不向伺服器要整張圖，只要路線附近那一塊
 AREA_MARGIN = 30             # 只要一塊時，起點與終點往外多要幾格
 FREE_ROUTE = False           # 跑不屬於任何任務的路線（抓寵指引）：不檢查任務進度；要搭配 STOP_AFTER_CAPTURE
+CAPTURE_LEVEL = None         # 只抓這個等級的（騎寵一律抓 1 級的，使用者 2026-11-21）；None＝不限
+CAPTURE_HEAL_BELOW = 0       # 抓寵時自己或寵物血量低於這個百分比就先用免費烤豬排補（0＝不補）
+CAPTURE_TRACE = None         # 給一個函式就會逐回合印出抓寵那一場的狀況（除錯用）
+CAPTURE_FIGHTER = ""         # 抓寵時每場前確認這隻戰寵在場上（被打倒會被撤下）
+CAPTURE_ESCAPE = False       # 沒有要抓的那幾場直接逃跑（單人到高等怪的地方抓 1 級寵用）
+CAPTURE_FAST = False         # 沒有要抓的那幾場用快戰打法打掉
 CARRY_ITEMS = ()             # 這個任務要帶在身上的道具名稱（不收進倉庫；缺了從倉庫領，領不齊就停）
 STOP_AFTER_CAPTURE = False   # 抓到腳本要的寵物後先停下來，不接著做下一段（轉生前要先讓人確認）
 STORE_SPARE_PETS = True      # --keep-pets 時關掉：共享寵物倉庫滿了（10 格），隊員的多餘寵物只能留在身上

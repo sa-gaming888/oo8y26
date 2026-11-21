@@ -36,7 +36,7 @@ ROUTE = (
     ("五兄弟山寨[45-60]", 103, 45),
     ("地下的一楼[60-85]", 104, 60),
     ("漆黑的洞穴[80-110]", 105, 92),
-    ("英雄岛[115-135]", 106, 112),   # 漆黑洞穴後段幾乎沒經驗：舊隊伍 113 級近兩小時升不了一級；02 隊 2026-11-20 在 112 級打了 500 場才升一級，再提早
+    ("英雄岛[115-135]", 106, 111),   # 漆黑洞穴後段幾乎沒經驗：舊隊伍 113 級近兩小時升不了一級；02 隊 2026-11-20 在 112 級打了 500 場才升一級，再提早
 )
 GATE_MAP = 100                 # 薩村外：戰後全隊補滿
 GATE_POSITIONS = [[637, 493], [637, 494]]
@@ -433,7 +433,7 @@ class Supervisor:
     def travel(self, session: Session, index: int) -> None:
         name, code, _ = ROUTE[index]
         self.finish_battle(session)
-        if index == 0 and (getattr(self, "raising_low", False) or (self.state.minimum_level or 1) < self.gate_until):
+        if index == 0 and (self.state.minimum_level or 1) < self.gate_until:
             # 未滿 GATE_UNTIL 級先在村口練（從記錄點走出村，不用傳送）：
             # 2026-11-20 實測一級隊伍直接進阿布洞穴第一場就全滅。到了等級由主迴圈清掉這筆紀錄，改傳送去阿布洞穴。
             from . import quest
@@ -656,8 +656,8 @@ class Supervisor:
                         continue
                     self.raising_low = bool(self.raising) and bool(getattr(session, "_training_low", False))
                     if self.raising_low:
-                        # 練忠誠的寵物等級比人物低很多時，借用退圖機制把練功點壓在路線第 0 張（travel 會改走村口）；
-                        # 等級相近的（剛抓到的 93 級布林帖斯）就在原本的練功圖邊打邊練
+                        # 練忠誠的寵物等級比人物低很多時（1 級的騎寵），借用退圖機制把練功點壓在路線第 0 張：
+                        # 阿布的洞穴（龜洞）。使用者 2026-11-21：去低等區練布林帖斯，寵物領好後就去龜洞練。
                         self.state.retreat_cap, self.state.retreat_until = 0, self.clock() + 120.0
                     elif self.state.zone_maps.get(0) == GATE_MAP and (self.state.minimum_level or 1) >= self.gate_until:
                         self.state.zone_maps.pop(0)      # 村口練夠了：下一步改傳送到路線的第一張圖
