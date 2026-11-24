@@ -211,6 +211,9 @@ def load_quest_profile(path: Path = None) -> dict:
 
 def load_rallies(path: Path = None) -> tuple:
     """要全隊一起打首領的步驟（「任務-步驟」）：各任務的「集合步驟」。"""
+    if os.environ.get("oo8y26_SOLO_RALLY") == "1":
+        # 等級遠高於首領的隊伍可以單人打（2026-11-23，02 隊 133 級打 70 級的奇寶）：設這個環境變數就不等集合。
+        return ()
     steps = []
     for task, limits in load_quest_profile(path).get("各任務", {}).items():
         for step in limits.get("集合步驟", ()) if isinstance(limits, dict) else ():
@@ -1880,6 +1883,12 @@ def run_step(session: Session, map_dir: Path, task: int, step: int, *, say=print
         if STOP_AFTER_CAPTURE:
             say(f"抓到「{catching}」，照設定先停在這裡，不接著做下一段")
             return progress_of(session)
+        if TEAM_MODE:
+            # 車隊模式：抓寵是隊長離隊單人抓的，接下來的路（例如轉生的守衛，十隻 100～120 級）要全隊走。
+            # 這裡先回到車隊的迴圈，讓它發現隊伍散了、重新組隊再接著做這一步
+            # （2026-11-23 02 隊二號抓到大地守護獸後單人走去打守衛，全滅）。
+            say(f"抓到「{catching}」，回車隊重新組隊後再接著做")
+            return progress_of(session)
         if rounds + 1 >= MAX_STEP_ROUNDS:
             raise ProtocolError(f"任務 {task} 第 {step} 步換分支次數超過上限，已停止")
         return run_step(session, map_dir, task, step, say=say, script_dir=script_dir, fight=team_fight,
@@ -1968,7 +1977,12 @@ def discard_listed(session: Session, *, keep=(), say=print, names=None) -> list:
             time.sleep(EAT_SECONDS)
             _send_item(session, 19, (world.x, world.y, slot))
             if not _item_changed(session, slot, before, 3.0):
-                raise ProtocolError(f"丟棄「{name}」伺服器沒有受理，已停止")
+                # 2026-11-22（02 隊五號，山賊洞 20607）：同一個道具連三次都丟不掉。清背包只是整理，
+                # 丟不掉就留著、這一輪不再丟（不重送）；背包真的不夠時，拿道具的步驟自己會停。
+                say(f"丟棄「{name}」伺服器沒有受理，先留著，這一輪不再丟")
+                if dropped:
+                    say("照丟棄名單丟掉：" + "、".join(dropped))
+                return dropped
             dropped.append(name)
     if dropped:
         say("照丟棄名單丟掉：" + "、".join(dropped))
@@ -2129,7 +2143,17 @@ def run_with_team(config: dict, map_dir: Path, task: int, team: tuple, *, stay: 
         elif session.world.map_id not in (RECORD_MAP, 500):
             say(f"目前在地圖 {session.world.map_id}，先回記錄點")
             session.return_to_record()
+        if any(session.world.roles.roles[member].status == 1 for member in members):
+            # 隊員剛單獨登入過，名冊殘留「在線」：這時召喚／組隊指令不會有回應（2026-11-23，02 隊集合打奇寶，
+            # 五號連三次逾時）。由隊長把隊員下線再叫上線、重新組隊。
+            say("有隊員是單獨登入後的殘留狀態：隊員下線再叫上線、重新組隊")
+            reform(session, leader, members, say=say)
         session.ensure_party(leader=leader, members=members)
+        if any(not session.world.actor(member).pets for member in members):
+            # 隊伍是上一條連線組好的：這條新連線收不到隊員的寵物資料，確認指定寵物會直接報「不存在」
+            # （2026-11-23，02 隊集合打龍王守衛第二次進場）。由隊長把隊員下線再叫上線、重新組隊，資料就會推過來。
+            say("這條連線沒有隊員的寵物資料：隊員下線再叫上線、重新組隊")
+            reform(session, leader, members, say=say)
         Supervisor(config, map_dir=map_dir, target_level=200, maximum_seconds=3600.0).use_plan(session.world.map_id or 0)
         session.ensure_pets(slots=team)
         say("隊伍：" + "、".join(f"{slot}:{session.world.roles.roles[slot].status}" for slot in team))
@@ -2278,7 +2302,18 @@ def reform(session: Session, leader: int, members: tuple, *, say=print, summon=N
     time.sleep(2.0)
     for member in members:
         if roles.roles[member].status != 0:
-            control(b"O|%d" % member, lambda member=member: roles.roles[member].status == 0)
+            try:
+                control(b"O|%d" % member, lambda member=member: roles.roles[member].status == 0)
+            except ProtocolError:
+                # 2026-11-22（02 隊兩次）：下線指令偶爾沒有回應。連線還在就重要一次名冊、再送一次；只補這一次。
+                if session.sock is None:
+                    raise
+                say(f"角色 {member} 下線指令沒有回應，重要名冊後再送一次")
+                time.sleep(3.0)
+                session.request_roles()
+                time.sleep(2.0)
+                if roles.roles[member].status != 0:
+                    control(b"O|%d" % member, lambda member=member: roles.roles[member].status == 0)
             time.sleep(1.6)      # 伺服器規定下線操作之間要隔 1 秒以上（「请过1秒后再进行下线操作」）
     control(b"AL", lambda: all(roles.roles[member].status != 0 for member in members))
     time.sleep(1.5)
@@ -2394,6 +2429,10 @@ def run_caravan(config: dict, map_dir: Path, task: int, team: tuple, controller:
                 fight_present(session, say=say, allow_escape=False)
             progress = progress_of(session)
             known[leader] = progress.next_step(task)
+            if str(leader) in os.environ.get("oo8y26_CARAVAN_SKIP", "").split(","):
+                # 這隻只陪同、不做這個任務（轉生任務可以重複接：已經轉生過的角色任務表上仍是「第 1 步」，
+                # 會被當成進度最落後的那一隻；2026-11-23 02 隊一號轉生後車隊又輪到牠）。
+                known[leader] = None
             if STORE_AFTER_DONE and leader in ran and known[leader] is None and leader not in stored_after:
                 # 這隻剛做完這個任務：把指定的獎勵存進牠自己的個人道具倉庫（只有牠當隊長的這條連線碰得到牠的背包）
                 stored_after.add(leader)
@@ -2422,6 +2461,10 @@ def run_caravan(config: dict, map_dir: Path, task: int, team: tuple, controller:
                 remember(leader)
                 continue
             step = known[leader]
+            if formed:
+                session.request_roles()
+                if not session.world.roles.ready(leader, members):
+                    formed = False            # 上一步途中隊長離過隊（單人抓寵、只收單人的 NPC）：重新組隊
             if not formed:
                 reform(session, leader, members, say=say)
                 formed = True
@@ -2446,7 +2489,14 @@ def run_caravan(config: dict, map_dir: Path, task: int, team: tuple, controller:
             if solo_hp_percent(session.world) < CARAVAN_HEAL_BELOW:
                 heal_with_items(session, say=say)        # 車隊的隊長要帶頭打首領，血量維持在八成五以上
             if CARAVAN_DISCARD:
-                discard_listed(session, keep=unfinished_items(session, task), say=say)
+                try:
+                    discard_listed(session, keep=unfinished_items(session, task), say=say)
+                except ProtocolError as error:
+                    # 2026-11-22（02 隊，山賊洞 20607）：同一格地上已有東西時丟不下去。清背包只是順手做的，
+                    # 丟不掉就留著接著做任務；背包真的不夠時後面拿道具的步驟自己會停。
+                    if "伺服器沒有受理" not in str(error) or session.sock is None:
+                        raise
+                    say(f"{error}——先留著，接著做任務")
                 discard_pets(session, say=say)
             say(f"任務 {task} {tasks[task]['title']}：第 {step}／{total} 步")
             ran.add(leader)
@@ -2465,7 +2515,9 @@ def run_caravan(config: dict, map_dir: Path, task: int, team: tuple, controller:
                     relogged.add(jumped)
                     say(f"{error}——這張圖在路線後段，從這裡接著走")
                     continue
-                if "摸黑也走不到" in str(error) and (leader, step) not in relogged and session.sock is not None:
+                if (("摸黑也走不到" in str(error) or "都沒有收到位置回報" in str(error))
+                        and (leader, step) not in relogged and session.sock is not None):
+                    # 2026-11-22（02 隊，地圖 200 野外）：打完路上一場全隊戰鬥後移動連三次沒有位置回報，同樣重新登入處理。
                     # 打贏通道上的守衛後，這條連線認定的位置常和伺服器不一致，移動全被忽略；
                     # 原地重新登入拿到正確位置就走得動（風的守護獸，2026-11-19／20 實測兩次）。同一步只做一次。
                     relogged.add((leader, step))

@@ -62,6 +62,11 @@ PARTY_RESET_AT = 3             # 組隊連續失敗到第幾次時，讓子號�
 ROSTER_MISMATCH_TEXT = "戰鬥角色與指定五人隊伍不符"   # 隊長卡在一場隊伍不完整的戰鬥裡：一樣要先清狀態
 STUCK_IN_BATTLE_TEXT = "战斗中"  # 「子账号战斗中，无法召唤」：等待無效，第一次看到就清狀態
 FRUIT_SECONDS = 8 * 3600       # 一顆智慧果的效期
+BEST_FRUIT = "五倍智慧果(1小时)"   # 使用者 2026-11-24：身上有五倍果就優先吃
+BEST_FRUIT_SECONDS = 3600
+MALL_FRUIT = "双倍智慧果(4小时)"   # 背包沒有果子時到商城石幣分頁買的那一種
+MALL_FRUIT_PRICE = 20000
+MALL_FRUIT_SECONDS = 4 * 3600
 FRUIT_MARGIN = 120.0           # 智慧果到期後多久內要回去整備（秒）
 
 
@@ -206,7 +211,12 @@ def relocation_candidates(grid, origin, attempt: int) -> list:
 
 def write_plan(path: Path, map_id: int, *, positions, maximum_enemy_level: int) -> None:
     """產生給既有戰鬥流程用的單一階段計畫檔（血量由總控自己把關，計畫內門檻設最低）。"""
-    base = json.loads((Path(__file__).resolve().parents[1] / "data" / "training_plan.json").read_text(encoding="utf-8"))
+    # 以目前指定的計畫檔（環境變數 oo8y26_TRAINING_PLAN）為底：不同隊伍鎖定的騎寵、戰寵不同，
+    # 一律拿預設那份當底會把別隊的寵物設定蓋掉（2026-11-23，02 隊集合打龍王守衛時「指定寵物不存在」）。
+    override = os.environ.get("oo8y26_TRAINING_PLAN")
+    source = Path(override) if override and Path(override).is_file() else (
+        Path(__file__).resolve().parents[1] / "data" / "training_plan.json")
+    base = json.loads(source.read_text(encoding="utf-8"))
     base["stages"] = [{
         "id": f"map_{map_id}", "minimum_team_level": 1, "location": f"地圖 {map_id}", "map_id": map_id,
         "positions": positions, "allowed_monsters": ["*"], "maximum_enemy_level": maximum_enemy_level,
@@ -339,17 +349,31 @@ class Supervisor:
             self.sleep(2.0)
             if (self.state.minimum_level or 0) % BAG_EVERY_LEVELS == 0:
                 self.clear_bag(slot)
+            self.claim_daily(slot)
+            self.swap_pets(slot)
             left = self.fruit_left(slot)
+            if left is not None and left > BEST_FRUIT_SECONDS:
+                # 剩餘時間超過一小時＝現在是雙倍果的加成。五倍和雙倍只能擇一（後吃的蓋掉前面的），
+                # 智慧果不用省（2026-11-24 高手提醒、使用者轉述）：身上有五倍果就直接吃掉蓋過去。
+                session, outfitter = newbie._connect(self.config, slot)
+                with session:
+                    outfitter.load()
+                    if self.eat_best(outfitter, slot):
+                        self.say(f"子號 {slot}：身上有五倍智慧果，直接吃（蓋掉剩 {left // 60} 分鐘的雙倍）")
+                        left = BEST_FRUIT_SECONDS
+                self.sleep(2.0)
             if left == 0:
                 session, outfitter = newbie._connect(self.config, slot)
                 with session:
                     outfitter.load()
-                    if outfitter.use_expecting(newbie.WISDOM_FRUIT, "学习经验的能力提升"):
+                    if self.eat_best(outfitter, slot):
+                        self.say(f"子號 {slot}：智慧果已到期，吃一顆五倍的（1 小時）")
+                        left = BEST_FRUIT_SECONDS
+                    elif outfitter.use_expecting(newbie.WISDOM_FRUIT, "学习经验的能力提升"):
                         self.say(f"子號 {slot}：智慧果已到期，再吃一顆")
                         left = FRUIT_SECONDS
                     else:
-                        self.say(f"子號 {slot}：智慧果已到期，但背包沒有智慧果")
-                        left = None            # 沒果子可吃：不再為了它回來整備
+                        left = self.buy_fruit(session, outfitter, slot)
                 self.sleep(2.0)
             lefts.append(left)
         known = [left for left in lefts if left]
@@ -358,13 +382,76 @@ class Supervisor:
         if self.state.fruit_due is not None:
             self.say(f"智慧果最早 {min(known) // 60} 分鐘後到期")
 
+    def eat_best(self, outfitter, slot: int) -> bool:
+        """吃一顆五倍智慧果；身上沒有回 False。吃不下去（例如等級不到道具要求）只記一行、回 False，
+        讓後面照常吃雙倍的——不能因為一顆果子讓整備失敗。連線斷了才往上丟。"""
+        try:
+            return outfitter.use_confirming(BEST_FRUIT, "学习经验的能力提升")
+        except ProtocolError as error:
+            if outfitter.session.sock is None:
+                raise
+            self.say(f"子號 {slot}：五倍智慧果沒有吃成（{error}）")
+            return False
+
+    def swap_pets(self, slot: int) -> None:
+        """整備時檢查騎寵、戰寵：練滿 140 級就換一隻沒滿的（見 petswap.py）。換不成只記一行，不影響練功。"""
+        from . import newbie, panels, petswap, training
+        try:
+            session, outfitter = newbie._connect(self.config, slot)
+            with session:
+                outfitter.load()
+                mounts, fighters = training.allowed_pets()
+                level = (panels.character_panel(session.world) or {}).get("等級") or 1
+                petswap.swap_maxed(session, outfitter, slot, say=lambda message: self.say(f"子號 {slot}：{message}"),
+                                   mount_names=tuple(dict.fromkeys(training.role_mounts(slot) + mounts)),
+                                   fighter_names=fighters, character_level=level)
+        except (ProtocolError, OSError, TimeoutError) as error:
+            self.say(f"子號 {slot}：換滿級寵物沒有完成（{error}）")
+        self.sleep(2.0)
+
+    def claim_daily(self, slot: int) -> None:
+        """整備時順便領每日在線獎勵（四顆五倍智慧果，見 daily.py）。領不到只記一行，不重試、不影響練功。"""
+        from . import daily, newbie
+        from .session import ProtocolError
+        try:
+            session, _ = newbie._connect(self.config, slot)
+            with session:
+                daily.claim_online_rewards(session, say=lambda message: self.say(f"子號 {slot}：{message}"))
+        except (ProtocolError, OSError, TimeoutError) as error:
+            self.say(f"子號 {slot}：在線獎勵沒有領成（{error}）")
+        self.sleep(2.0)
+
+    def buy_fruit(self, session, outfitter, slot: int):
+        """背包沒有智慧果：到商城石幣分頁買一顆「双倍智慧果(4小时)」（價格超過上限不買）吃掉。
+        買不到、吃不下去都只記一行、不重試，回 None（不再為了它回來整備）。"""
+        from . import mall
+        from .session import ProtocolError
+        try:
+            if not session.world.has_item(MALL_FRUIT):
+                mall.buy_with_stone(session, [MALL_FRUIT], say=lambda message: None, maximum_price=MALL_FRUIT_PRICE)
+                outfitter.items = {key: value[0] for key, value in (session.world.items or {}).items() if value and value[0]}
+            if outfitter.use_expecting(MALL_FRUIT, "学习经验的能力提升"):
+                self.say(f"子號 {slot}：背包沒有智慧果，到商城買一顆 4 小時的（{MALL_FRUIT_PRICE} 石幣）吃了")
+                return MALL_FRUIT_SECONDS
+        except (ProtocolError, OSError, TimeoutError) as error:
+            self.say(f"子號 {slot}：買智慧果沒有成功（{error}）")
+            return None
+        self.say(f"子號 {slot}：智慧果已到期，買了也沒吃成")
+        return None
+
     def clear_bag(self, slot: int) -> None:
         """隊員的背包只有牠自己登入時清得到：整備時順便把塞滿的肉丟掉（2026-11-20 舊隊伍四隻隊員的背包都被肉塞滿過）。"""
         from . import newbie, quest
         session, outfitter = newbie._connect(self.config, slot)
         with session:
             if session.world.items is not None and session.world.free_bag_slots() < MEAT_MIN_FREE:
-                quest.make_room(session, MEAT_FREE_TO, say=lambda message: self.say(f"子號 {slot}：{message}"))
+                try:
+                    quest.make_room(session, MEAT_FREE_TO, say=lambda message: self.say(f"子號 {slot}：{message}"))
+                except ProtocolError as error:
+                    # 背包裡沒有肉可清（例如被剛領的智慧果佔滿）：不是練功的錯，記一行就好；連線斷了才往上丟
+                    if session.sock is None:
+                        raise
+                    self.say(f"子號 {slot}：背包快滿但沒有肉可清（{error}）")
         self.sleep(2.0)
 
     def fruit_left(self, slot: int):

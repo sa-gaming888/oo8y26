@@ -68,7 +68,7 @@ class TrainingPlan:
                 if index not in actor.pets:
                     raise ProtocolError("尚未確認全隊騎寵或戰寵狀態，禁止開始戰鬥")
                 pet = actor.pets[index]
-                if pet_name(pet.name) not in expected:
+                if pet_name(pet.name) not in expected + (role_mounts(slot) if is_mount else ()):      # 角色各自指定的騎寵也算
                     raise ProtocolError("騎寵或戰寵不符合鎖定設定，禁止開始戰鬥")
                 if pet.hp * 100 < pet.max_hp * self.config["limits"]["minimum_hp_percent"]:
                     raise ProtocolError("指定寵物生命低於練功門檻，先補給再戰鬥")
@@ -107,6 +107,14 @@ def preferred_pets():
     def names(key, first=()):
         return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in list(first) + list(wanted[key])))
     return names("mount", EXTRA_MOUNTS), names("battle_pet")
+
+
+def role_mounts(slot: int) -> tuple:
+    """計畫檔的「role_mounts」：每隻角色各自最優先騎的寵物名稱（{"角色編號": [名稱…]}），沒寫回空的。
+    老虎能不能騎看角色造型，每隻角色騎得上的種類不同（2026-11-23 02 隊實測），所以不能全隊共用一份名單；
+    轉生後人物 1 級、高等的雷龍騎不上，就靠這裡指定的 1 級老虎。"""
+    listed = (TrainingPlan.load().config.get("role_mounts") or {}).get(str(slot), ())
+    return tuple(dict.fromkeys(pet_name(name.encode("utf-8")) for name in listed))
 
 
 EXTRA_MOUNTS = ()      # 容器用環境變數另外指定、排在最前面試的騎寵名稱（例如老虎）；騎不上會接著試計畫檔裡的

@@ -163,6 +163,34 @@ class Outfitter:
         del self.items[slot]
         return True
 
+    def use_confirming(self, name: str, keyword: str) -> bool:
+        """同 use_expecting，但使用後伺服器若跳出「要不要覆蓋現有加成」這類確認視窗就按「是／確定」。
+        已經有雙倍加成時吃五倍智慧果會跳這個視窗（dkbo/遊戲客戶端-AI 2026-11-21 的紀錄；本專案 2026-11-24 02 隊一號遇到）。
+        視窗像答題／驗證（類型 1012，或內文有「验证」「答题」）、不含確認字樣、或沒有「是／確定」鈕：不按，直接停。"""
+        slot = self.find(name)
+        if slot is None:
+            return False
+        self._use(slot)
+        done = lambda: any(keyword in text for text in self.messages)
+        if not self._pump(6.0, lambda: done() or bool(self.windows)) and not self._consumed(slot, name):
+            raise ProtocolError(f"使用「{name}」後沒有收到預期的確認，已停止")
+        if not done() and self.windows and not self._consumed(slot, name):
+            kind, buttons, sequence, objindex, data = self.windows[-1][:5]
+            text = data.decode("gbk", "replace") if isinstance(data, bytes) else str(data)
+            if kind == 1012 or "验证" in text or "答题" in text:
+                raise ProtocolError(f"使用「{name}」後出現像驗證的視窗，交給人處理，已停止（{text[:60]}）")
+            button = 4 if buttons & 4 else 1 if buttons & 1 else 0
+            if not button or not any(word in text for word in ("智慧果", "经验", "使用", "覆盖", "确定")):
+                raise ProtocolError(f"使用「{name}」後的視窗看不出是使用確認，不按，已停止（{text[:60]}）")
+            self._pump(1.0)
+            world = self.session.world
+            self.session._send_command(67, (world.x, world.y, sequence, objindex, button, b""),
+                                       time.monotonic() + self.session.timeout)
+            if not self._pump(6.0, done) and not self._consumed(slot, name):
+                raise ProtocolError(f"使用「{name}」按了確認後沒有收到預期的訊息，已停止（視窗：{text[:60]}）")
+        del self.items[slot]
+        return True
+
     def choose(self, name: str, option: int, expected: str) -> bool:
         """使用自選道具，核對視窗選項後回覆；背包沒有就略過。"""
         slot = self.find(name)

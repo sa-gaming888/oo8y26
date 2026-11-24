@@ -435,7 +435,7 @@ class Session:
 
     def ensure_pets(self, *, mount=None, battle_pet=None, slots=(1, 2, 3, 4, 5)):
         """直接指定已擁有寵物，逐項等待騎乘與出戰回應；不購買、不丟寵、不循環猜狀態。"""
-        from .training import allowed_pets, mount_optional, pick_pet, pet_name, preferred_pets, raise_loyalty
+        from .training import allowed_pets, mount_optional, pick_pet, pet_name, preferred_pets, raise_loyalty, role_mounts
         try:
             if not hasattr(self, "_ride_refused"):
                 self._ride_refused = {}
@@ -481,7 +481,8 @@ class Session:
                 first = None
                 refused_at = self._ride_refused.get(slot)
                 if preferred is not None and (refused_at is None or time.monotonic() - refused_at >= RIDE_RETRY_SECONDS):
-                    first = choose(actor, *preferred)
+                    # 每隻角色自己指定的騎寵（計畫檔 role_mounts）排在全隊的優先名單前面
+                    first = choose(actor, tuple(dict.fromkeys(role_mounts(slot) + preferred[0])), preferred[1])
                 targets.append((slot, first is not None) + (first or fallback(slot)))
             done = []
             for slot, is_preferred, mount_index, fighter_index in targets:
@@ -494,7 +495,7 @@ class Session:
                     slot, mount_index, give_up_after=RIDE_TRY_SECONDS if is_preferred else None)
                 if not riding and is_preferred:
                     # 第一順位騎不上：優先名單上身上還有的其他寵物依序試（例如老虎騎不上再試雷龍）
-                    for name in preferred[0]:
+                    for name in tuple(dict.fromkeys(role_mounts(slot) + preferred[0])):
                         found = [pet.index for pet in actor.pets.values() if pet_name(pet.name) == name]
                         if len(found) != 1 or found[0] in (mount_index, fighter_index) or actor.pets[found[0]].hp <= 0:
                             continue
