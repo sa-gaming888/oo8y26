@@ -198,13 +198,15 @@ CROWDED_TEXT = "已经有超过"       # 「您的当前坐标已经有超过3�
 RELOCATE_RINGS = (6, 9, 12, 15, 18)
 
 
-def relocation_candidates(grid, origin, attempt: int) -> list:
-    """擁擠時要改站的候選格：以 origin 為中心、半徑隨次數加大的八個方向，只留可通行的。"""
-    radius = RELOCATE_RINGS[min(attempt, len(RELOCATE_RINGS) - 1)]
+def relocation_candidates(grid, origin, attempt: int, salt: int = 0) -> list:
+    """擁擠時要改站的候選格：以 origin 為中心、半徑隨次數加大的八個方向，只留可通行的。
+    salt 是每個帳號固定的數字：不同隊伍先試的方向、半徑都錯開。2026-11-24 七隊同時在英雄島，
+    每隊都照同一個順序挪到同一格，挪了還是擠，fusion05 連續失敗 5 次停下。"""
+    radius = RELOCATE_RINGS[min(attempt, len(RELOCATE_RINGS) - 1)] + salt // 8 % 3
     x, y = origin
     points = [(x + dx * radius, y + dy * radius)
               for dx, dy in ((1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, 1), (-1, -1), (1, -1))]
-    shift = attempt % len(points)
+    shift = (attempt + salt) % len(points)
     points = points[shift:] + points[:shift]
     return [point for point in points if grid.walkable(point)]
 
@@ -580,10 +582,12 @@ class Supervisor:
         from . import quest
         attempt = self.crowded - 1
         origin = (session.world.x, session.world.y)
-        reach = RELOCATE_RINGS[-1] + 4
+        reach = RELOCATE_RINGS[-1] + 6
         grid = quest.fetch_server_grid(session, say=lambda message: None,
                                        area=(origin[0] - reach, origin[1] - reach, origin[0] + reach, origin[1] + reach))
-        candidates = relocation_candidates(grid, origin, attempt)
+        import zlib
+        salt = zlib.crc32(str(self.config.get("account", "")).encode("utf-8"))
+        candidates = relocation_candidates(grid, origin, attempt, salt)
         if not candidates:
             raise ProtocolError("附近找不到可以改站的空格")
         quest.walk(session, self.map_dir, candidates[0], say=lambda message: None)

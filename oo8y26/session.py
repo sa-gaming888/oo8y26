@@ -483,6 +483,10 @@ class Session:
                 if preferred is not None and (refused_at is None or time.monotonic() - refused_at >= RIDE_RETRY_SECONDS):
                     # 每隻角色自己指定的騎寵（計畫檔 role_mounts）排在全隊的優先名單前面
                     first = choose(actor, tuple(dict.fromkeys(role_mounts(slot) + preferred[0])), preferred[1])
+                    if first is None and role_mounts(slot):
+                        # 戰寵換成優先名單以外的（例如滿級後從倉庫換上的人龍）時，角色自己指定的騎寵還是要優先騎
+                        # （2026-11-24 02 隊一號：戰寵換成揚奇洛斯後騎寵退回雷龍）
+                        first = choose(actor, role_mounts(slot), fighter_names)
                 targets.append((slot, first is not None) + (first or fallback(slot)))
             done = []
             for slot, is_preferred, mount_index, fighter_index in targets:
