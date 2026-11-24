@@ -5,7 +5,8 @@
 - 騎寵滿級：先從個人寵物倉庫找可以騎的——名稱和現在這隻相同（造型一定騎得上），或在這隻角色的騎寵名單上；
   要未滿 140 級，而且等級不超過人物等級＋5（超過騎不上）。倉庫沒有，就到商城石幣分頁買一顆「自选老虎蛋」
   （10000 石幣）開出這隻角色騎得上的那一種老虎（現在騎的就是老虎就開同一種，否則用計畫檔 role_mounts 指定的）。
-- 滿級的那一隻存進個人寵物倉庫（不丟）。倉庫滿了、寵物欄也滿了就不換，記一行。
+- 滿級的那一隻：老虎、雷龍檔次沒有滿檔的賣給漁村寵物店（使用者 2026-11-24，見 petsell.py）；
+  其餘存進個人寵物倉庫（不丟）。倉庫滿了、寵物欄也滿了就不換，記一行。
 
 換的動作只在角色單獨登入、不在戰鬥中時做（分級練功的整備步驟）。這裡只把寵物換到身上，
 騎上去和設成出戰由組隊後的 ensure_pets 照名稱處理（同名的滿級那一隻已經存進倉庫，身上只剩一隻）。
@@ -66,9 +67,31 @@ def _exchange(session: Session, store: PersonalPetStorage, old_index: int, bring
     return True
 
 
+def _retire(session: Session, store: PersonalPetStorage, slot: int, old_index: int, bring, say, label: str, map_dir):
+    """把滿級的那一隻換下來。回傳「賣」「存」或 None（沒換成）。
+    老虎、雷龍檔次沒滿檔就賣給漁村寵物店（使用者 2026-11-24 的規則，見 petsell.py），其餘存個人寵物倉庫。
+    賣的時候先賣再把新的弄到身上（賣完寵物欄才有空位）；賣完回記錄點，等隊長重新組隊。"""
+    from . import petsell
+    world = session.world
+    pet = world.pets[old_index]
+    if map_dir is not None:
+        rows = petsell.query_grade(session, slot, old_index)
+        if petsell.should_sell(_name(pet), pet.level or 0, rows):
+            detail = "、".join(f"{item[:1]} {mine}/{best}" for item, mine, best in rows)
+            say(f"{label}{_name(pet)}滿級、檔次沒滿（{detail}，總檔差 {petsell.grade_diff(rows):+d}）：賣給漁村寵物店")
+            petsell.sell(session, map_dir, old_index, say=say)
+            time.sleep(1.5)
+            bring()
+            time.sleep(1.5)
+            session.return_to_record()
+            return "賣"
+    return "存" if _exchange(session, store, old_index, bring, say, label) else None
+
+
 def swap_maxed(session: Session, outfitter, slot: int, *, mount_names: tuple, fighter_names: tuple,
-               character_level: int, say=print) -> list:
-    """檢查這隻角色的騎寵、戰寵，滿級就換；回傳做了的事（文字）。outfitter 是 newbie.Outfitter（開蛋要用）。"""
+               character_level: int, say=print, map_dir=None) -> list:
+    """檢查這隻角色的騎寵、戰寵，滿級就換；回傳做了的事（文字）。outfitter 是 newbie.Outfitter（開蛋要用）。
+    有給 map_dir（走去寵物店要用）才會套用「老虎、雷龍檔次沒滿就賣」的規則，沒給就一律存倉庫。"""
     world = session.world
     if session.battle.active:
         return []
@@ -86,8 +109,9 @@ def swap_maxed(session: Session, outfitter, slot: int, *, mount_names: tuple, fi
             session._set_battle_pet(slot, -1)             # 出戰中的不能存倉庫：先收起來
             time.sleep(1.0)
             old = _name(world.pets[fighter])
-            if _exchange(session, store, fighter, lambda: store.withdraw(found[2]), say, "戰寵"):
-                done.append(f"戰寵 {old}（滿級）存倉庫，換上倉庫的 {found[0]}（{found[1]} 級）")
+            how = _retire(session, store, slot, fighter, lambda: store.withdraw(found[2]), say, "戰寵", map_dir)
+            if how:
+                done.append(f"戰寵 {old}（滿級）{'賣掉' if how == '賣' else '存倉庫'}，換上倉庫的 {found[0]}（{found[1]} 級）")
             time.sleep(1.5)
     if maxed(mount):
         current = _name(world.pets[mount])
@@ -116,8 +140,9 @@ def swap_maxed(session: Session, outfitter, slot: int, *, mount_names: tuple, fi
             if not outfitter.choose(EGG, TIGERS.index(tiger) + 1, tiger):
                 raise ProtocolError(f"開{EGG}失敗，已停止")
 
-        if _exchange(session, store, mount, bring, say, "騎寵"):
-            done.append(f"騎寵 {current}（滿級）存倉庫，" + (f"換上倉庫的 {found[0]}（{found[1]} 級）" if found is not None
+        how = _retire(session, store, slot, mount, bring, say, "騎寵", map_dir)
+        if how:
+            done.append(f"騎寵 {current}（滿級）{'賣掉' if how == '賣' else '存倉庫'}，" + (f"換上倉庫的 {found[0]}（{found[1]} 級）" if found is not None
                                                         else f"買{EGG}（{EGG_PRICE} 石幣）開出 {tiger}"))
     for line in done:
         say(line)

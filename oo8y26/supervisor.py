@@ -385,10 +385,10 @@ class Supervisor:
                         left = self.buy_fruit(session, outfitter, slot)
                 self.sleep(2.0)
             lefts.append(left)
-            name, gold, fame = self.ledger.get(slot, (None, None, None))
+            name, gold, fame, turns = self.ledger.get(slot, (None, None, None, None))
             # 給定時回報用的一行（石幣、聲望是這次整備登入時讀到的；加成是剩餘分鐘）
             self.say(f"子號 {slot} 帳務：{name or '?'}｜石幣 {gold if gold is not None else '?'}｜聲望 {fame if fame is not None else '?'}"
-                     f"｜經驗加成剩 {left // 60 if left else 0} 分鐘")
+                     f"｜經驗加成剩 {left // 60 if left else 0} 分鐘｜{turns if turns is not None else '?'} 轉")
         known = [left for left in lefts if left]
         # 五隻都讀得到才排下一次按時間整備；任何一隻讀不到或沒果子就不排，避免空轉。
         # 至少每 MAINTAIN_EVERY_SECONDS 回來整備一次：領當天陸續到門檻的在線獎勵、更新石幣聲望的紀錄、檢查加成有沒有斷
@@ -418,7 +418,7 @@ class Supervisor:
                 level = (panels.character_panel(session.world) or {}).get("等級") or 1
                 petswap.swap_maxed(session, outfitter, slot, say=lambda message: self.say(f"子號 {slot}：{message}"),
                                    mount_names=tuple(dict.fromkeys(training.role_mounts(slot) + mounts)),
-                                   fighter_names=fighters, character_level=level)
+                                   fighter_names=fighters, character_level=level, map_dir=self.map_dir)
         except (ProtocolError, OSError, TimeoutError) as error:
             self.say(f"子號 {slot}：換滿級寵物沒有完成（{error}）")
         self.sleep(2.0)
@@ -435,7 +435,7 @@ class Supervisor:
                 while time.monotonic() < end and session.world.raw.get("貨幣") is None:
                     session.poll_event(0.3)
                 panel = panels.character_panel(session.world) or {}
-                self.ledger[slot] = (panel.get("名稱"), panel.get("石幣"), panel.get("聲望"))
+                self.ledger[slot] = (panel.get("名稱"), panel.get("石幣"), panel.get("聲望"), panel.get("轉生數"))
                 daily.claim_online_rewards(session, say=lambda message: self.say(f"子號 {slot}：{message}"))
         except (ProtocolError, OSError, TimeoutError) as error:
             self.say(f"子號 {slot}：在線獎勵沒有領成（{error}）")
