@@ -197,6 +197,11 @@ def team_report(world) -> list:
 
 CROWDED_TEXT = "已经有超过"       # 「您的当前坐标已经有超过3名玩家，无法建立新的原地遇敌」
 RELOCATE_RINGS = (6, 9, 12, 15, 18)
+RELOCATE_TRIES = 5
+# 落點擁擠時只在這個範圍裡換位置（地圖 → 左上 x, y、右下 x, y）。2026-11-24 英雄島七隊實測：
+# 站 (217,341)、(217,347) 的隊伍兩個半小時升十幾級；被挪到 (211,354)、(218,354)、(219,355)、(201,347) 的
+# 打了六七百場幾乎沒升級、聲望也沒動（那幾格遇到的怪不一樣）。所以不能往南、往西挪。
+GOOD_SPOTS = {500: (213, 339, 221, 347)}
 
 
 def relocation_candidates(grid, origin, attempt: int, salt: int = 0) -> list:
@@ -600,13 +605,31 @@ class Supervisor:
                                        area=(origin[0] - reach, origin[1] - reach, origin[0] + reach, origin[1] + reach))
         import zlib
         salt = zlib.crc32(str(self.config.get("account", "")).encode("utf-8"))
-        candidates = relocation_candidates(grid, origin, attempt, salt)
+        box = GOOD_SPOTS.get(session.world.map_id)
+        if box is not None:
+            # 這張圖有實測過升得動的範圍：只在裡面挑（每個帳號從不同的格子開始，每次擁擠再往後換一格）
+            spots = [(x, y) for y in range(box[1], box[3] + 1) for x in range(box[0], box[2] + 1)
+                     if (x, y) != origin and grid.walkable((x, y))]
+            start = (salt + attempt * 7) % len(spots) if spots else 0
+            candidates = spots[start:] + spots[:start]
+        else:
+            candidates = relocation_candidates(grid, origin, attempt, salt)
         if not candidates:
             raise ProtocolError("附近找不到可以改站的空格")
-        quest.walk(session, self.map_dir, candidates[0], say=lambda message: None)
+        chosen = None
+        for spot in candidates[:RELOCATE_TRIES]:      # 走不到就換下一格，不因為一格走不到就算失敗
+            try:
+                quest.walk(session, self.map_dir, spot, say=lambda message: None)
+                chosen = spot
+                break
+            except ProtocolError:
+                if session.sock is None:
+                    raise
+        if chosen is None:
+            raise ProtocolError(f"附近 {RELOCATE_TRIES} 個可以改站的空格都走不到")
         self.finish_battle(session)
         # 走路時伺服器不回推座標（world.x/y 要到戰鬥結束才更新），所以這裡記的是目標格。
-        self.say(f"原位置 {origin} 太多人，改站到 {candidates[0]}（第 {self.crowded} 次）")
+        self.say(f"原位置 {origin} 太多人，改站到 {chosen}（第 {self.crowded} 次）")
         self.crowded = 0
 
     def battle_once(self, session: Session) -> None:
@@ -656,6 +679,10 @@ class Supervisor:
 
     def train(self, session: Session, index: int) -> str:
         """在目前地圖連續打，回傳停下來的原因。每場前由總控檢查血量與等級。"""
+        box = GOOD_SPOTS.get(session.world.map_id)
+        if box is not None and not self.crowded and not (
+                box[0] <= session.world.x <= box[2] and box[1] <= session.world.y <= box[3]):
+            self.crowded = 1          # 人不在這張圖升得動的範圍裡（落點或上次被挪到外面）：先走進去再打
         if self.crowded:
             self.relocate(session)
         self.use_plan(session.world.map_id, maximum_enemy_level=250)
