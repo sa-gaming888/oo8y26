@@ -424,6 +424,11 @@ class Supervisor:
         try:
             session, _ = newbie._connect(self.config, slot)
             with session:
+                # 聲望在貨幣資料（S262）裡，要送 C261 (0) 伺服器才給（官方客戶端進世界後也會送；2026-11-24 實測）
+                session._send_command(261, (0,), time.monotonic() + session.timeout)
+                end = time.monotonic() + 5.0
+                while time.monotonic() < end and session.world.raw.get("貨幣") is None:
+                    session.poll_event(0.3)
                 panel = panels.character_panel(session.world) or {}
                 self.ledger[slot] = (panel.get("名稱"), panel.get("石幣"), panel.get("聲望"))
                 daily.claim_online_rewards(session, say=lambda message: self.say(f"子號 {slot}：{message}"))
