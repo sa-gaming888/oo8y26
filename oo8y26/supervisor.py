@@ -67,7 +67,8 @@ BEST_FRUIT_SECONDS = 3600
 MALL_FRUIT = "双倍智慧果(4小时)"   # 背包沒有果子時到商城石幣分頁買的那一種
 MALL_FRUIT_PRICE = 20000
 MALL_FRUIT_SECONDS = 4 * 3600
-FRUIT_MARGIN = 120.0           # 智慧果到期後多久內要回去整備（秒）
+FRUIT_MARGIN = 120.0
+MAINTAIN_EVERY_SECONDS = 3600.0   # 沒有別的理由也至少這麼久整備一次           # 智慧果到期後多久內要回去整備（秒）
 
 
 @dataclass
@@ -240,6 +241,7 @@ class Supervisor:
         self.status_path = Path("captures") / "supervisor-status.local.json"
         self.quest_path = Path("captures") / "quest-request.local.json"
         self.battles = 0
+        self.ledger = {}             # 角色編號 → (名稱, 石幣, 聲望)：整備登入時讀到的，寫進日誌給定時回報用
         self.crowded = 0             # >0 表示上一圈因落點擁擠失敗，下一圈先改站（值＝第幾次）
         self.crowded_total = 0
         self.reset_done = False      # 這一次組隊失敗期間是否已讓子號清過狀態
@@ -378,10 +380,15 @@ class Supervisor:
                         left = self.buy_fruit(session, outfitter, slot)
                 self.sleep(2.0)
             lefts.append(left)
+            name, gold, fame = self.ledger.get(slot, (None, None, None))
+            # 給定時回報用的一行（石幣、聲望是這次整備登入時讀到的；加成是剩餘分鐘）
+            self.say(f"子號 {slot} 帳務：{name or '?'}｜石幣 {gold if gold is not None else '?'}｜聲望 {fame if fame is not None else '?'}"
+                     f"｜經驗加成剩 {left // 60 if left else 0} 分鐘")
         known = [left for left in lefts if left]
         # 五隻都讀得到才排下一次按時間整備；任何一隻讀不到或沒果子就不排，避免空轉。
-        self.state.fruit_due = self.clock() + min(known) if len(known) == 5 else None
-        if self.state.fruit_due is not None:
+        # 至少每 MAINTAIN_EVERY_SECONDS 回來整備一次：領當天陸續到門檻的在線獎勵、更新石幣聲望的紀錄、檢查加成有沒有斷
+        self.state.fruit_due = self.clock() + min(min(known) if len(known) == 5 else MAINTAIN_EVERY_SECONDS, MAINTAIN_EVERY_SECONDS)
+        if known:
             self.say(f"智慧果最早 {min(known) // 60} 分鐘後到期")
 
     def eat_best(self, outfitter, slot: int) -> bool:
@@ -413,11 +420,12 @@ class Supervisor:
 
     def claim_daily(self, slot: int) -> None:
         """整備時順便領每日在線獎勵（四顆五倍智慧果，見 daily.py）。領不到只記一行，不重試、不影響練功。"""
-        from . import daily, newbie
-        from .session import ProtocolError
+        from . import daily, newbie, panels
         try:
             session, _ = newbie._connect(self.config, slot)
             with session:
+                panel = panels.character_panel(session.world) or {}
+                self.ledger[slot] = (panel.get("名稱"), panel.get("石幣"), panel.get("聲望"))
                 daily.claim_online_rewards(session, say=lambda message: self.say(f"子號 {slot}：{message}"))
         except (ProtocolError, OSError, TimeoutError) as error:
             self.say(f"子號 {slot}：在線獎勵沒有領成（{error}）")
