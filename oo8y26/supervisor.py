@@ -246,6 +246,7 @@ class Supervisor:
         self.status_path = Path("captures") / "supervisor-status.local.json"
         self.quest_path = Path("captures") / "quest-request.local.json"
         self.battles = 0
+        self.fruit_rate = {}         # 角色編號 → 目前經驗果的倍率（2、5；沒有加成是 1）
         self.ledger = {}             # 角色編號 → (名稱, 石幣, 聲望)：整備登入時讀到的，寫進日誌給定時回報用
         self.crowded = 0             # >0 表示上一圈因落點擁擠失敗，下一圈先改站（值＝第幾次）
         self.crowded_total = 0
@@ -370,15 +371,18 @@ class Supervisor:
                     if self.eat_best(outfitter, slot):
                         self.say(f"子號 {slot}：身上有五倍智慧果，直接吃（蓋掉剩 {left // 60} 分鐘的雙倍）")
                         left = BEST_FRUIT_SECONDS
+                        self.fruit_rate[slot] = 5
                 self.sleep(2.0)
             if left == 0:
                 session, outfitter = newbie._connect(self.config, slot)
                 with session:
                     outfitter.load()
                     if self.eat_best(outfitter, slot):
+                        self.fruit_rate[slot] = 5
                         self.say(f"子號 {slot}：智慧果已到期，吃一顆五倍的（1 小時）")
                         left = BEST_FRUIT_SECONDS
                     elif outfitter.use_expecting(newbie.WISDOM_FRUIT, "学习经验的能力提升"):
+                        self.fruit_rate[slot] = 2
                         self.say(f"子號 {slot}：智慧果已到期，再吃一顆")
                         left = FRUIT_SECONDS
                     else:
@@ -388,13 +392,24 @@ class Supervisor:
             name, gold, fame, turns = self.ledger.get(slot, (None, None, None, None))
             # 給定時回報用的一行（石幣、聲望是這次整備登入時讀到的；加成是剩餘分鐘）
             self.say(f"子號 {slot} 帳務：{name or '?'}｜石幣 {gold if gold is not None else '?'}｜聲望 {fame if fame is not None else '?'}"
-                     f"｜經驗加成剩 {left // 60 if left else 0} 分鐘｜{turns if turns is not None else '?'} 轉")
+                     f"｜經驗加成 {self.fruit_rate.get(slot, '?') if left else 1} 倍剩 {left // 60 if left else 0} 分鐘｜{turns if turns is not None else '?'} 轉")
         known = [left for left in lefts if left]
         # 五隻都讀得到才排下一次按時間整備；任何一隻讀不到或沒果子就不排，避免空轉。
         # 至少每 MAINTAIN_EVERY_SECONDS 回來整備一次：領當天陸續到門檻的在線獎勵、更新石幣聲望的紀錄、檢查加成有沒有斷
         self.state.fruit_due = self.clock() + min(min(known) if len(known) == 5 else MAINTAIN_EVERY_SECONDS, MAINTAIN_EVERY_SECONDS)
         if known:
             self.say(f"智慧果最早 {min(known) // 60} 分鐘後到期")
+
+    def eat_meat(self, session: Session) -> None:
+        """兩場之間吃肉補血。伺服器沒受理（2026-11-24 fusion08 兩次因為這個連續失敗而停下）只記一行：
+        吃不到肉不算這一圈失敗，血量真的太低時後面的補血判斷會帶隊回村。連線斷了才往上丟。"""
+        from . import modules
+        try:
+            modules.eat_meat(session, EAT_MEAT_BELOW, say=self.say)
+        except ProtocolError as error:
+            if session.sock is None or "吃肉" not in str(error):
+                raise
+            self.say(f"吃肉沒有成功（{error}），這次先不吃")
 
     def eat_best(self, outfitter, slot: int) -> bool:
         """吃一顆五倍智慧果；身上沒有回 False。吃不下去（例如等級不到道具要求）只記一行、回 False，
@@ -452,6 +467,7 @@ class Supervisor:
                 outfitter.items = {key: value[0] for key, value in (session.world.items or {}).items() if value and value[0]}
             if outfitter.use_expecting(MALL_FRUIT, "学习经验的能力提升"):
                 self.say(f"子號 {slot}：背包沒有智慧果，到商城買一顆 4 小時的（{MALL_FRUIT_PRICE} 石幣）吃了")
+                self.fruit_rate[slot] = 2
                 return MALL_FRUIT_SECONDS
         except (ProtocolError, OSError, TimeoutError) as error:
             self.say(f"子號 {slot}：買智慧果沒有成功（{error}）")
@@ -485,6 +501,8 @@ class Supervisor:
                 parts = message.split(b"|")
                 if len(parts) >= 5 and parts[4].isdigit():
                     seconds["left"] = int(parts[4])
+                    if parts[3].isdigit():            # 第 3 段是經驗果倍率（百分比：200＝雙倍、500＝五倍）
+                        self.fruit_rate[slot] = int(parts[3]) // 100 if int(parts[4]) else 1
             return original(message)
 
         session.world._status = watch
@@ -643,7 +661,7 @@ class Supervisor:
             quest.make_room(session, MEAT_FREE_TO, say=lambda message: None)
         if not self.fast:
             session.test_novice_battle(maximum_rounds=30, maximum_seconds=290)
-            modules.eat_meat(session, EAT_MEAT_BELOW, say=self.say)
+            self.eat_meat(session)
             return
         try:
             if getattr(session, "_fast_battle_on", False) is not True:
@@ -664,7 +682,7 @@ class Supervisor:
             session.close()
             raise
         modules.fast_fight(session)
-        modules.eat_meat(session, EAT_MEAT_BELOW, say=self.say)
+        self.eat_meat(session)
 
     def report_team(self, session: Session) -> None:
         """每隔 status_seconds 把人物與隊伍狀態印到日誌（使用者 2026-11-20）；0＝不印。只讀現有資料，不多送封包。"""
